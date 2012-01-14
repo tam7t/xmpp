@@ -432,7 +432,7 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 	}
 	c.jid = iq.Bind.Jid // our local id
 
-	if features.Session.Local != "" {
+	if features.Session != nil {
 		// The server needs a session to be established. See RFC 3921,
 		// section 3.
 		fmt.Fprintf(c.out, "<iq to='%s' type='set' id='sess_1'><session xmlns='%s'/></iq>", domain, nsSession)
@@ -506,23 +506,24 @@ func nextStart(p *xml.Parser) (elem xml.StartElement, err error) {
 type streamFeatures struct {
 	XMLName    xml.Name `xml:"http://etherx.jabber.org/streams features"`
 	StartTLS   tlsStartTLS
-	StartTLS2   tlsStartTLS
 	Mechanisms saslMechanisms
 	Bind       bindBind
-	Session    xml.Name
+	// This is a hack for now to get around the fact that the new encoding/xml
+	// doesn't unmarshal to XMLName elements.
+	Session    *string `xml:"session"`
 }
 
 type streamError struct {
 	XMLName xml.Name `xml:"http://etherx.jabber.org/streams error"`
-	Any     xml.Name
-	Text    string
+	Any     xml.Name `xml:",any"`
+	Text    string `xml:"text"`
 }
 
 // RFC 3920  C.3  TLS name space
 
 type tlsStartTLS struct {
 	XMLName  xml.Name `xml:"urn:ietf:params:xml:ns:xmpp-tls starttls"`
-	Required xml.Name
+	Required xml.Name `xml:"required"`
 }
 
 type tlsProceed struct {
@@ -537,12 +538,12 @@ type tlsFailure struct {
 
 type saslMechanisms struct {
 	XMLName   xml.Name `xml:"urn:ietf:params:xml:ns:xmpp-sasl mechanisms"`
-	Mechanism []string
+	Mechanism []string `xml:"mechanism"`
 }
 
 type saslAuth struct {
 	XMLName   xml.Name `xml:"urn:ietf:params:xml:ns:xmpp-sasl auth"`
-	Mechanism string   `xml:"attr"`
+	Mechanism string   `xml:"mechanism,attr"`
 }
 
 type saslChallenge string
@@ -559,80 +560,80 @@ type saslSuccess struct {
 
 type saslFailure struct {
 	XMLName xml.Name `xml:"urn:ietf:params:xml:ns:xmpp-sasl failure"`
-	Any     xml.Name
+	Any     xml.Name `xml:",any"`
 }
 
 // RFC 3920  C.5  Resource binding name space
 
 type bindBind struct {
 	XMLName  xml.Name `xml:"urn:ietf:params:xml:ns:xmpp-bind bind"`
-	Resource string
-	Jid      string
+	Resource string `xml:"resource"`
+	Jid      string `xml:"jid"`
 }
 
 // RFC 3921  B.1  jabber:client
 type ClientMessage struct {
 	XMLName xml.Name `xml:"jabber:client message"`
-	From    string   `xml:"attr"`
-	Id      string   `xml:"attr"`
-	To      string   `xml:"attr"`
-	Type    string   `xml:"attr"` // chat, error, groupchat, headline, or normal
+	From    string   `xml:"from,attr"`
+	Id      string   `xml:"id,attr"`
+	To      string   `xml:"to,attr"`
+	Type    string   `xml:"type,attr"` // chat, error, groupchat, headline, or normal
 
 	// These should technically be []clientText,
 	// but string is much more convenient.
-	Subject string
-	Body    string
-	Thread  string
+	Subject string `xml:"subject"`
+	Body    string `xml:"body"`
+	Thread  string `xml:"thread"`
 }
 
 type ClientText struct {
-	Lang string `xml:"attr"`
-	Body string `xml:"chardata"`
+	Lang string `xml:"lang,attr"`
+	Body string `xml:",chardata"`
 }
 
 type ClientPresence struct {
 	XMLName xml.Name `xml:"jabber:client presence"`
-	From    string   `xml:"attr"`
-	Id      string   `xml:"attr"`
-	To      string   `xml:"attr"`
-	Type    string   `xml:"attr"` // error, probe, subscribe, subscribed, unavailable, unsubscribe, unsubscribed
-	Lang    string   `xml:"attr"`
+	From    string   `xml:"from,attr"`
+	Id      string   `xml:"id,attr"`
+	To      string   `xml:"to,attr"`
+	Type    string   `xml:"type,attr"` // error, probe, subscribe, subscribed, unavailable, unsubscribe, unsubscribed
+	Lang    string   `xml:"lang,attr"`
 
-	Show     string // away, chat, dnd, xa
-	Status   string // sb []clientText
-	Priority string
-	Error    *ClientError
+	Show     string  `xml:"show"` // away, chat, dnd, xa
+	Status   string `xml:"status"` // sb []clientText
+	Priority string `xml:"priority"`
+	Error    *ClientError `xml:"error"`
 }
 
 type ClientIQ struct { // info/query
 	XMLName xml.Name `xml:"jabber:client iq"`
-	From    string   `xml:"attr"`
-	Id      string   `xml:"attr"`
-	To      string   `xml:"attr"`
-	Type    string   `xml:"attr"` // error, get, result, set
-	Error   ClientError
-	Bind    bindBind
-	Query   []byte `xml:"innerxml"`
+	From    string   `xml:"from,attr"`
+	Id      string   `xml:"id,attr"`
+	To      string   `xml:"to,attr"`
+	Type    string   `xml:"type,attr"` // error, get, result, set
+	Error   ClientError `xml:"error"`
+	Bind    bindBind `xml:"bind"`
+	Query   []byte `xml:",innerxml"`
 }
 
 type ClientError struct {
 	XMLName xml.Name `xml:"jabber:client error"`
-	Code    string   `xml:"attr"`
-	Type    string   `xml:"attr"`
-	Any     xml.Name
-	Text    string
+	Code    string   `xml:"code,attr"`
+	Type    string   `xml:"type,attr"`
+	Any     xml.Name `xml:",any"`
+	Text    string `xml:"text"`
 }
 
 type Roster struct {
 	XMLName xml.Name `xml:"jabber:iq:roster query"`
-	Item    []RosterEntry
+	Item    []RosterEntry `xml:"item"`
 }
 
 type RosterEntry struct {
-	Jid          string `xml:"attr"`
-	Subscription string `xml:"attr"`
-	Name         string `xml:"attr"`
-	Group        []string
+	Jid          string `xml:"jid,attr"`
+	Subscription string `xml:"subscription,attr"`
+	Name         string `xml:"name,attr"`
+	Group        []string `xml:"group"`
 }
 
 // Scan XML token stream for next element and save into val.
@@ -700,14 +701,14 @@ type DiscoveryReply struct {
 
 type DiscoveryIdentity struct {
 	XMLName xml.Name `xml:"http://jabber.org/protocol/disco#info identity"`
-	Category string `xml:"attr"`
-	Type string `xml:"attr"`
-	Name string `xml:"attr"`
+	Category string `xml:"category,attr"`
+	Type string `xml:"type,attr"`
+	Name string `xml:"name,attr"`
 }
 
 type DiscoveryFeature struct {
 	XMLName xml.Name `xml:"http://jabber.org/protocol/disco#info feature"`
-	Var string `xml:"attr"`
+	Var string `xml:"var,attr"`
 }
 
 type VersionQuery struct {
@@ -725,8 +726,8 @@ type VersionReply struct {
 // http://xmpp.org/rfcs/rfc6120.html#stanzas-error-syntax
 type ErrorReply struct {
 	XMLName xml.Name `xml:"error"`
-	Type string `xml:"attr"`
-	Error interface{}
+	Type string `xml:"type,attr"`
+	Error interface{} `xml:"error"`
 }
 
 // ErrorBadRequest reflects a bad-request stanza. See
@@ -743,10 +744,10 @@ type RosterRequest struct {
 }
 
 type RosterRequestItem struct {
-	Jid          string `xml:"attr"`
-	Subscription string `xml:"attr"`
-	Name         string `xml:"attr"`
-	Group        []string
+	Jid          string `xml:"jid,attr"`
+	Subscription string `xml:"subscription,attr"`
+	Name         string `xml:"name,attr"`
+	Group        []string `xml:"group"`
 }
 
 // An EmptyReply results in in no XML.
