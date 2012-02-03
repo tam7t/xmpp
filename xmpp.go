@@ -18,12 +18,12 @@ import (
 )
 
 const (
-	nsStream = "http://etherx.jabber.org/streams"
-	nsTLS    = "urn:ietf:params:xml:ns:xmpp-tls"
-	nsSASL   = "urn:ietf:params:xml:ns:xmpp-sasl"
-	nsBind   = "urn:ietf:params:xml:ns:xmpp-bind"
-	nsSession= "urn:ietf:params:xml:ns:xmpp-session"
-	nsClient = "jabber:client"
+	nsStream  = "http://etherx.jabber.org/streams"
+	nsTLS     = "urn:ietf:params:xml:ns:xmpp-tls"
+	nsSASL    = "urn:ietf:params:xml:ns:xmpp-sasl"
+	nsBind    = "urn:ietf:params:xml:ns:xmpp-bind"
+	nsSession = "urn:ietf:params:xml:ns:xmpp-session"
+	nsClient  = "jabber:client"
 )
 
 // RemoveResourceFromJid returns the user@domain portion of a JID.
@@ -39,12 +39,12 @@ func RemoveResourceFromJid(jid string) string {
 // Conn represents a connection to an XMPP server.
 type Conn struct {
 	out        io.Writer
-	rawOut     io.Writer  // doesn't log. Used for <auth>
-	in         *xml.Parser
+	rawOut     io.Writer // doesn't log. Used for <auth>
+	in         *xml.Decoder
 	jid        string
 	nextCookie Cookie
 
-	lock sync.Mutex
+	lock      sync.Mutex
 	inflights map[Cookie]chan<- Stanza
 }
 
@@ -139,7 +139,7 @@ func ParseRoster(reply Stanza) ([]RosterEntry, error) {
 	}
 
 	var roster Roster
-	if err := xml.Unmarshal(bytes.NewBuffer(iq.Query), &roster); err != nil {
+	if err := xml.NewDecoder(bytes.NewBuffer(iq.Query)).Decode(&roster); err != nil {
 		return nil, err
 	}
 	return roster.Item, nil
@@ -163,7 +163,7 @@ func (c *Conn) SendIQ(to, typ string, value interface{}) (reply chan Stanza, coo
 		return
 	}
 	if _, ok := value.(EmptyReply); !ok {
-		if err = xml.Marshal(c.out, value); err != nil {
+		if err = xml.NewEncoder(c.out).Encode(value); err != nil {
 			return
 		}
 	}
@@ -181,7 +181,7 @@ func (c *Conn) SendIQReply(to, typ, id string, value interface{}) error {
 		return err
 	}
 	if _, ok := value.(EmptyReply); !ok {
-		if err := xml.Marshal(c.out, value); err != nil {
+		if err := xml.NewEncoder(c.out).Encode(value); err != nil {
 			return err
 		}
 	}
@@ -228,7 +228,7 @@ func (c *Conn) getFeatures(domain string) (features streamFeatures, err error) {
 	// Now we're in the stream and can use Unmarshal.
 	// Next message should be <features> to tell us authentication options.
 	// See section 4.6 in RFC 3920.
-	if err = c.in.Unmarshal(&features, nil); err != nil {
+	if err = c.in.DecodeElement(&features, nil); err != nil {
 		err = errors.New("unmarshal <features>: " + err.Error())
 		return
 	}
@@ -332,7 +332,7 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 		conn = config.Conn
 	} else {
 		if log != nil {
-			io.WriteString(log, "Making TCP connection to " + address + "\n")
+			io.WriteString(log, "Making TCP connection to "+address+"\n")
 		}
 
 		if conn, err = net.Dial("tcp", address); err != nil {
@@ -398,7 +398,7 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 		}
 		fmt.Fprintf(c.rawOut, "<iq type='set' id='create_1'><query xmlns='jabber:iq:register'><username>%s</username><password>%s</password></query></iq>", user, password)
 		var iq ClientIQ
-		if err = c.in.Unmarshal(&iq, nil); err != nil {
+		if err = c.in.DecodeElement(&iq, nil); err != nil {
 			return nil, errors.New("unmarshal <iq>: " + err.Error())
 		}
 		if iq.Type == "error" {
@@ -407,7 +407,7 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 	}
 
 	if log != nil {
-		io.WriteString(log, "Authenticating as " + user + "\n")
+		io.WriteString(log, "Authenticating as "+user+"\n")
 	}
 	if err := c.authenticate(features, user, password); err != nil {
 		return nil, err
@@ -424,7 +424,7 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 	// Send IQ message asking to bind to the local user name.
 	fmt.Fprintf(c.out, "<iq type='set' id='bind_1'><bind xmlns='%s'/></iq>", nsBind)
 	var iq ClientIQ
-	if err = c.in.Unmarshal(&iq, nil); err != nil {
+	if err = c.in.DecodeElement(&iq, nil); err != nil {
 		return nil, errors.New("unmarshal <iq>: " + err.Error())
 	}
 	if &iq.Bind == nil {
@@ -436,7 +436,7 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 		// The server needs a session to be established. See RFC 3921,
 		// section 3.
 		fmt.Fprintf(c.out, "<iq to='%s' type='set' id='sess_1'><session xmlns='%s'/></iq>", domain, nsSession)
-		if err = c.in.Unmarshal(&iq, nil); err != nil {
+		if err = c.in.DecodeElement(&iq, nil); err != nil {
 			return nil, errors.New("xmpp: unmarshal <iq>: " + err.Error())
 		}
 		if iq.Type != "result" {
@@ -447,11 +447,11 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 	return c, nil
 }
 
-func makeInOut(conn io.ReadWriter, config *Config) (in *xml.Parser, out io.Writer) {
+func makeInOut(conn io.ReadWriter, config *Config) (in *xml.Decoder, out io.Writer) {
 	if config != nil && config.InLog != nil {
-		in = xml.NewParser(io.TeeReader(conn, config.InLog))
+		in = xml.NewDecoder(io.TeeReader(conn, config.InLog))
 	} else {
-		in = xml.NewParser(conn)
+		in = xml.NewDecoder(conn)
 	}
 
 	if config != nil && config.OutLog != nil {
@@ -485,7 +485,7 @@ func xmlEscape(s string) string {
 }
 
 // Scan XML token stream to find next StartElement.
-func nextStart(p *xml.Parser) (elem xml.StartElement, err error) {
+func nextStart(p *xml.Decoder) (elem xml.StartElement, err error) {
 	for {
 		var t xml.Token
 		t, err = p.Token()
@@ -510,13 +510,13 @@ type streamFeatures struct {
 	Bind       bindBind
 	// This is a hack for now to get around the fact that the new encoding/xml
 	// doesn't unmarshal to XMLName elements.
-	Session    *string `xml:"session"`
+	Session *string `xml:"session"`
 }
 
 type streamError struct {
 	XMLName xml.Name `xml:"http://etherx.jabber.org/streams error"`
 	Any     xml.Name `xml:",any"`
-	Text    string `xml:"text"`
+	Text    string   `xml:"text"`
 }
 
 // RFC 3920  C.3  TLS name space
@@ -567,8 +567,8 @@ type saslFailure struct {
 
 type bindBind struct {
 	XMLName  xml.Name `xml:"urn:ietf:params:xml:ns:xmpp-bind bind"`
-	Resource string `xml:"resource"`
-	Jid      string `xml:"jid"`
+	Resource string   `xml:"resource"`
+	Jid      string   `xml:"jid"`
 }
 
 // RFC 3921  B.1  jabber:client
@@ -599,21 +599,21 @@ type ClientPresence struct {
 	Type    string   `xml:"type,attr"` // error, probe, subscribe, subscribed, unavailable, unsubscribe, unsubscribed
 	Lang    string   `xml:"lang,attr"`
 
-	Show     string  `xml:"show"` // away, chat, dnd, xa
-	Status   string `xml:"status"` // sb []clientText
-	Priority string `xml:"priority"`
+	Show     string       `xml:"show"`   // away, chat, dnd, xa
+	Status   string       `xml:"status"` // sb []clientText
+	Priority string       `xml:"priority"`
 	Error    *ClientError `xml:"error"`
 }
 
 type ClientIQ struct { // info/query
-	XMLName xml.Name `xml:"jabber:client iq"`
-	From    string   `xml:"from,attr"`
-	Id      string   `xml:"id,attr"`
-	To      string   `xml:"to,attr"`
-	Type    string   `xml:"type,attr"` // error, get, result, set
+	XMLName xml.Name    `xml:"jabber:client iq"`
+	From    string      `xml:"from,attr"`
+	Id      string      `xml:"id,attr"`
+	To      string      `xml:"to,attr"`
+	Type    string      `xml:"type,attr"` // error, get, result, set
 	Error   ClientError `xml:"error"`
-	Bind    bindBind `xml:"bind"`
-	Query   []byte `xml:",innerxml"`
+	Bind    bindBind    `xml:"bind"`
+	Query   []byte      `xml:",innerxml"`
 }
 
 type ClientError struct {
@@ -621,25 +621,25 @@ type ClientError struct {
 	Code    string   `xml:"code,attr"`
 	Type    string   `xml:"type,attr"`
 	Any     xml.Name `xml:",any"`
-	Text    string `xml:"text"`
+	Text    string   `xml:"text"`
 }
 
 type Roster struct {
-	XMLName xml.Name `xml:"jabber:iq:roster query"`
+	XMLName xml.Name      `xml:"jabber:iq:roster query"`
 	Item    []RosterEntry `xml:"item"`
 }
 
 type RosterEntry struct {
-	Jid          string `xml:"jid,attr"`
-	Subscription string `xml:"subscription,attr"`
-	Name         string `xml:"name,attr"`
+	Jid          string   `xml:"jid,attr"`
+	Subscription string   `xml:"subscription,attr"`
+	Name         string   `xml:"name,attr"`
 	Group        []string `xml:"group"`
 }
 
 // Scan XML token stream for next element and save into val.
 // If val == nil, allocate new element based on proto map.
 // Either way, return val.
-func next(p *xml.Parser) (xml.Name, interface{}, error) {
+func next(p *xml.Decoder) (xml.Name, interface{}, error) {
 	// Read start element to find out what type we want.
 	se, err := nextStart(p)
 	if err != nil {
@@ -687,28 +687,28 @@ func next(p *xml.Parser) (xml.Name, interface{}, error) {
 	}
 
 	// Unmarshal into that storage.
-	if err = p.Unmarshal(nv, &se); err != nil {
+	if err = p.DecodeElement(nv, &se); err != nil {
 		return xml.Name{}, nil, err
 	}
 	return se.Name, nv, err
 }
 
 type DiscoveryReply struct {
-	XMLName xml.Name `xml:"http://jabber.org/protocol/disco#info query"`
+	XMLName    xml.Name `xml:"http://jabber.org/protocol/disco#info query"`
 	Identities []DiscoveryIdentity
-	Features []DiscoveryFeature
+	Features   []DiscoveryFeature
 }
 
 type DiscoveryIdentity struct {
-	XMLName xml.Name `xml:"http://jabber.org/protocol/disco#info identity"`
-	Category string `xml:"category,attr"`
-	Type string `xml:"type,attr"`
-	Name string `xml:"name,attr"`
+	XMLName  xml.Name `xml:"http://jabber.org/protocol/disco#info identity"`
+	Category string   `xml:"category,attr"`
+	Type     string   `xml:"type,attr"`
+	Name     string   `xml:"name,attr"`
 }
 
 type DiscoveryFeature struct {
 	XMLName xml.Name `xml:"http://jabber.org/protocol/disco#info feature"`
-	Var string `xml:"var,attr"`
+	Var     string   `xml:"var,attr"`
 }
 
 type VersionQuery struct {
@@ -717,17 +717,17 @@ type VersionQuery struct {
 
 type VersionReply struct {
 	XMLName xml.Name `xml:"jabber:iq:version query"`
-	Name string `xml:"name"`
-	Version string `xml:"version"`
-	OS string `xml:"os"`
+	Name    string   `xml:"name"`
+	Version string   `xml:"version"`
+	OS      string   `xml:"os"`
 }
 
 // ErrorReply reflects an XMPP error stanza. See
 // http://xmpp.org/rfcs/rfc6120.html#stanzas-error-syntax
 type ErrorReply struct {
-	XMLName xml.Name `xml:"error"`
-	Type string `xml:"type,attr"`
-	Error interface{} `xml:"error"`
+	XMLName xml.Name    `xml:"error"`
+	Type    string      `xml:"type,attr"`
+	Error   interface{} `xml:"error"`
 }
 
 // ErrorBadRequest reflects a bad-request stanza. See
@@ -739,14 +739,14 @@ type ErrorBadRequest struct {
 // RosterRequest is used to request that the server update the user's roster.
 // See RFC 6121, section 2.3.
 type RosterRequest struct {
-	XMLName xml.Name `xml:"jabber:iq:roster query"`
-	Item RosterRequestItem `xml:"item"`
+	XMLName xml.Name          `xml:"jabber:iq:roster query"`
+	Item    RosterRequestItem `xml:"item"`
 }
 
 type RosterRequestItem struct {
-	Jid          string `xml:"jid,attr"`
-	Subscription string `xml:"subscription,attr"`
-	Name         string `xml:"name,attr"`
+	Jid          string   `xml:"jid,attr"`
+	Subscription string   `xml:"subscription,attr"`
+	Name         string   `xml:"name,attr"`
 	Group        []string `xml:"group"`
 }
 
