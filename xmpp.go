@@ -314,6 +314,9 @@ type Config struct {
 	Log io.Writer
 	// Create, if true, causes a new account to be created on the server.
 	Create bool
+	// TrustedAddress, if true, means that the address passed to Dial is
+	// trusted and that certificates for that name should be accepted.
+	TrustedAddress bool
 }
 
 // Dial creates a new connection to an XMPP server and authenticates as the
@@ -382,7 +385,19 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 	}
 
 	if err := tlsConn.VerifyHostname(domain); err != nil {
-		return nil, errors.New("xmpp: failed to match TLS certificate to name: " + err.Error())
+		if config.TrustedAddress {
+			fmt.Fprintf(log, "Certificate fails to verify against domain in username: %s\n", err)
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, errors.New("xmpp: failed to split address when checking whether TLS certificate is valid: " + err.Error())
+			}
+			if err = tlsConn.VerifyHostname(host); err != nil {
+				return nil, errors.New("xmpp: failed to match TLS certificate to address after failing to match to username: " + err.Error())
+			}
+			fmt.Fprintf(log, "Certificate matches against trusted server hostname: %s\n", host)
+		} else {
+			return nil, errors.New("xmpp: failed to match TLS certificate to name: " + err.Error())
+		}
 	}
 
 	c.in, c.out = makeInOut(tlsConn, config)
