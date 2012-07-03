@@ -386,7 +386,9 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 
 	if err := tlsConn.VerifyHostname(domain); err != nil {
 		if config.TrustedAddress {
-			fmt.Fprintf(log, "Certificate fails to verify against domain in username: %s\n", err)
+			if log != nil {
+				fmt.Fprintf(log, "Certificate fails to verify against domain in username: %s\n", err)
+			}
 			host, _, err := net.SplitHostPort(address)
 			if err != nil {
 				return nil, errors.New("xmpp: failed to split address when checking whether TLS certificate is valid: " + err.Error())
@@ -394,7 +396,9 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 			if err = tlsConn.VerifyHostname(host); err != nil {
 				return nil, errors.New("xmpp: failed to match TLS certificate to address after failing to match to username: " + err.Error())
 			}
-			fmt.Fprintf(log, "Certificate matches against trusted server hostname: %s\n", host)
+			if log != nil {
+				fmt.Fprintf(log, "Certificate matches against trusted server hostname: %s\n", host)
+			}
 		} else {
 			return nil, errors.New("xmpp: failed to match TLS certificate to name: " + err.Error())
 		}
