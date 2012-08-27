@@ -28,9 +28,9 @@ const (
 
 // RemoveResourceFromJid returns the user@domain portion of a JID.
 func RemoveResourceFromJid(jid string) string {
-	lastSlash := strings.Index(jid, "/")
-	if lastSlash != -1 {
-		return jid[:lastSlash]
+	slash := strings.Index(jid, "/")
+	if slash != -1 {
+		return jid[:slash]
 	}
 	return jid
 }
