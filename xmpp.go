@@ -42,6 +42,7 @@ type Conn struct {
 	in         *xml.Decoder
 	jid        string
 	nextCookie Cookie
+	archive    bool
 
 	lock      sync.Mutex
 	inflights map[Cookie]chan<- Stanza
@@ -190,7 +191,12 @@ func (c *Conn) SendIQReply(to, typ, id string, value interface{}) error {
 
 // Send sends an IM message to the given user.
 func (c *Conn) Send(to, msg string) error {
-	_, err := fmt.Fprintf(c.out, "<message to='%s' from='%s' type='chat'><body>%s</body></message>", xmlEscape(to), xmlEscape(c.jid), xmlEscape(msg))
+	archive := ""
+	if !c.archive {
+		// See https://developers.google.com/talk/jep_extensions/otr
+		archive = "<nos:x xmlns:nos='google:nosave' value='enabled'/>"
+	}
+	_, err := fmt.Fprintf(c.out, "<message to='%s' from='%s' type='chat'><body>%s</body>%s</message>", xmlEscape(to), xmlEscape(c.jid), xmlEscape(msg), archive)
 	return err
 }
 
@@ -316,6 +322,10 @@ type Config struct {
 	// TrustedAddress, if true, means that the address passed to Dial is
 	// trusted and that certificates for that name should be accepted.
 	TrustedAddress bool
+	// Archive determines whether we disable archiving for messages. If
+	// false, XML is sent with each message to disable recording on the
+	// server.
+	Archive bool
 }
 
 // Dial creates a new connection to an XMPP server and authenticates as the
@@ -323,6 +333,7 @@ type Config struct {
 func Dial(address, user, domain, password string, config *Config) (c *Conn, err error) {
 	c = new(Conn)
 	c.inflights = make(map[Cookie]chan<- Stanza)
+	c.archive = config.Archive
 
 	var log io.Writer
 	if config != nil && config.Log != nil {
