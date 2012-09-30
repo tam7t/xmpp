@@ -193,8 +193,12 @@ func (c *Conn) SendIQReply(to, typ, id string, value interface{}) error {
 func (c *Conn) Send(to, msg string) error {
 	archive := ""
 	if !c.archive {
+		// The first part of archive is from google:
 		// See https://developers.google.com/talk/jep_extensions/otr
-		archive = "<nos:x xmlns:nos='google:nosave' value='enabled'/>"
+		// The second part of the stanza is from XEP-0136
+		// http://xmpp.org/extensions/xep-0136.html#pref-syntax-item-otr
+		// http://xmpp.org/extensions/xep-0136.html#otr-nego
+		archive = "<nos:x xmlns:nos='google:nosave' value='enabled'/><arc:record xmlns:arc='http://jabber.org/protocol/archive' otr='require'/>"
 	}
 	_, err := fmt.Fprintf(c.out, "<message to='%s' from='%s' type='chat'><body>%s</body>%s</message>", xmlEscape(to), xmlEscape(c.jid), xmlEscape(msg), archive)
 	return err
