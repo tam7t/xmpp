@@ -193,8 +193,12 @@ func (c *Conn) SendIQReply(to, typ, id string, value interface{}) error {
 func (c *Conn) Send(to, msg string) error {
 	archive := ""
 	if !c.archive {
+		// The first part of archive is from google:
 		// See https://developers.google.com/talk/jep_extensions/otr
-		archive = "<nos:x xmlns:nos='google:nosave' value='enabled'/>"
+		// The second part of the stanza is from XEP-0136
+		// http://xmpp.org/extensions/xep-0136.html#pref-syntax-item-otr
+		// http://xmpp.org/extensions/xep-0136.html#otr-nego
+		archive = "<nos:x xmlns:nos='google:nosave' value='enabled'/><arc:record xmlns:arc='http://jabber.org/protocol/archive' otr='require'/>"
 	}
 	_, err := fmt.Fprintf(c.out, "<message to='%s' from='%s' type='chat'><body>%s</body>%s</message>", xmlEscape(to), xmlEscape(c.jid), xmlEscape(msg), archive)
 	return err
@@ -328,8 +332,8 @@ type Config struct {
 	Archive bool
 }
 
-// Dial creates a new connection to an XMPP server and authenticates as the
-// given user.
+// Dial creates a new connection to an XMPP server, authenticates as the
+// given user and attempts to disable automatic archiving of message.
 func Dial(address, user, domain, password string, config *Config) (c *Conn, err error) {
 	c = new(Conn)
 	c.inflights = make(map[Cookie]chan<- Stanza)
@@ -473,6 +477,17 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 		}
 	}
 
+	// This attempts to disable server side logging:
+	// http://xmpp.org/extensions/xep-0136.html#pref-syntax-item-otr
+	if !c.archive {
+		fmt.Fprintf(c.out, "<iq type='set' id='archive_1'><auto save='false' xmlns='urn:xmpp:archive' otr='required'/></iq>")
+		if err = c.in.DecodeElement(&iq, nil); err != nil {
+			return nil, errors.New("xmpp: unmarshal <iq>: " + err.Error())
+		}
+		if iq.Type != "result" {
+			return nil, errors.New("xmpp: unable to disable archiving")
+		}
+	}
 	return c, nil
 }
 
