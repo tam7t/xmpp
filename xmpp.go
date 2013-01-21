@@ -476,18 +476,6 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 			return nil, errors.New("xmpp: session establishment failed")
 		}
 	}
-
-	// This attempts to disable server side logging:
-	// http://xmpp.org/extensions/xep-0136.html#pref-syntax-item-otr
-  //if !c.archive {
-  //  fmt.Fprintf(c.out, "<iq type='set' id='archive_1'><auto save='false' xmlns='urn:xmpp:archive'/></iq>")
-  //  if err = c.in.DecodeElement(&iq, nil); err != nil {
-  //    return nil, errors.New("xmpp: unmarshal <iq>: " + err.Error())
-  //  }
-  //  if iq.Type != "result" {
-  //    return nil, errors.New("xmpp: unable to disable archiving")
-  //  }
-  //}
 	return c, nil
 }
 
