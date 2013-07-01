@@ -336,7 +336,7 @@ type Config struct {
 }
 
 // Dial creates a new connection to an XMPP server, authenticates as the
-// given user and attempts to disable automatic archiving of message.
+// given user.
 func Dial(address, user, domain, password string, config *Config) (c *Conn, err error) {
 	c = new(Conn)
 	c.inflights = make(map[Cookie]chan<- Stanza)
