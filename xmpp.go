@@ -316,7 +316,7 @@ type Config struct {
 	// InLog is an optional Writer which receives the raw contents of the
 	// XML from the server.
 	InLog io.Writer
-	// OutLog is an option Writer which receives the raw XML sent to the
+	// OutLog is an optional Writer which receives the raw XML sent to the
 	// server.
 	OutLog io.Writer
 	// Log is an optional Writer which receives human readable log messages
