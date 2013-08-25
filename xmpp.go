@@ -8,6 +8,7 @@ package xmpp
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -17,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -656,7 +658,16 @@ type ClientPresence struct {
 	Show     string       `xml:"show"`   // away, chat, dnd, xa
 	Status   string       `xml:"status"` // sb []clientText
 	Priority string       `xml:"priority"`
+	Caps     *ClientCaps  `xml:"c"`
 	Error    *ClientError `xml:"error"`
+}
+
+type ClientCaps struct {
+	XMLName xml.Name `xml:"http://jabber.org/protocol/caps c"`
+	Ext     string   `xml:"ext,attr"`
+	Hash    string   `xml:"hash,attr"`
+	Node    string   `xml:"node,attr"`
+	Ver     string   `xml:"ver,attr"`
 }
 
 type ClientIQ struct { // info/query
@@ -748,13 +759,16 @@ func next(p *xml.Decoder) (xml.Name, interface{}, error) {
 }
 
 type DiscoveryReply struct {
-	XMLName    xml.Name `xml:"http://jabber.org/protocol/disco#info query"`
-	Identities []DiscoveryIdentity
-	Features   []DiscoveryFeature
+	XMLName    xml.Name            `xml:"http://jabber.org/protocol/disco#info query"`
+	Node       string              `xml:"node"`
+	Identities []DiscoveryIdentity `xml:"identity"`
+	Features   []DiscoveryFeature  `xml:"feature"`
+	Forms      []Form              `xml:"jabber:x:data x"`
 }
 
 type DiscoveryIdentity struct {
 	XMLName  xml.Name `xml:"http://jabber.org/protocol/disco#info identity"`
+	Lang     string   `xml:"lang,attr,omitempty"`
 	Category string   `xml:"category,attr"`
 	Type     string   `xml:"type,attr"`
 	Name     string   `xml:"name,attr"`
@@ -763,6 +777,146 @@ type DiscoveryIdentity struct {
 type DiscoveryFeature struct {
 	XMLName xml.Name `xml:"http://jabber.org/protocol/disco#info feature"`
 	Var     string   `xml:"var,attr"`
+}
+
+type Form struct {
+	XMLName      xml.Name    `xml:"jabber:x:data x"`
+	Type         string      `xml:"type,attr"`
+	Title        string      `xml:"title,omitempty"`
+	Instructions string      `xml:"instructions,omitempty"`
+	Fields       []FormField `xml:"field"`
+}
+
+type FormField struct {
+	XMLName  xml.Name           `xml:"field"`
+	Desc     string             `xml:"desc,omitempty"`
+	Var      string             `xml:"var,attr"`
+	Type     string             `xml:"type,attr,omitempty"`
+	Label    string             `xml:"label,attr,omitempty"`
+	Required *FormFieldRequired `xml:"required"`
+	Values   []string           `xml:"value"`
+	Options  []FormFieldOption  `xml:"option"`
+}
+
+type FormFieldRequired struct {
+	XMLName xml.Name `xml:"required"`
+}
+
+type FormFieldOption struct {
+	Label string   `xml:"var,attr,omitempty"`
+	Value []string `xml:"value"`
+}
+
+// VerificationString returns a SHA-1 verification string as defined in XEP-0115.
+// See http://xmpp.org/extensions/xep-0115.html#ver
+func (r *DiscoveryReply) VerificationString() (string, error) {
+	h := sha1.New()
+
+	seen := make(map[string]bool)
+	identitySorter := &xep0115sorter{}
+	for i := range r.Identities {
+		identitySorter.add(&r.Identities[i])
+	}
+	sort.Sort(identitySorter)
+	for _, id := range identitySorter.s {
+		id := id.(*DiscoveryIdentity)
+		c := id.Category + "/" + id.Type + "/" + id.Lang + "/" + id.Name + "<"
+		if seen[c] {
+			return "", errors.New("duplicate discovery identity")
+		}
+		seen[c] = true
+		io.WriteString(h, c)
+	}
+
+	seen = make(map[string]bool)
+	featureSorter := &xep0115sorter{}
+	for i := range r.Features {
+		featureSorter.add(&r.Features[i])
+	}
+	sort.Sort(featureSorter)
+	for _, f := range featureSorter.s {
+		f := f.(*DiscoveryFeature)
+		if seen[f.Var] {
+			return "", errors.New("duplicate discovery feature")
+		}
+		seen[f.Var] = true
+		io.WriteString(h, f.Var+"<")
+	}
+
+	seen = make(map[string]bool)
+	for _, f := range r.Forms {
+		if len(f.Fields) == 0 {
+			continue
+		}
+		fieldSorter := &xep0115sorter{}
+		for i := range f.Fields {
+			fieldSorter.add(&f.Fields[i])
+		}
+		sort.Sort(fieldSorter)
+		formTypeField := fieldSorter.s[0].(*FormField)
+		if formTypeField.Var != "FORM_TYPE" {
+			continue
+		}
+		if seen[formTypeField.Type] {
+			return "", errors.New("multiple forms of the same type")
+		}
+		seen[formTypeField.Type] = true
+		if len(formTypeField.Values) != 1 {
+			return "", errors.New("form does not have a single FORM_TYPE value")
+		}
+		if formTypeField.Type != "hidden" {
+			continue
+		}
+		io.WriteString(h, formTypeField.Values[0]+"<")
+		for _, field := range fieldSorter.s[1:] {
+			field := field.(*FormField)
+			io.WriteString(h, field.Var+"<")
+			values := append([]string{}, field.Values...)
+			sort.Strings(values)
+			for _, v := range values {
+				io.WriteString(h, v+"<")
+			}
+		}
+	}
+
+	return base64.StdEncoding.EncodeToString(h.Sum(nil)), nil
+}
+
+type xep0115lesser interface {
+	xep0115less(interface{}) bool
+}
+
+type xep0115sorter struct{ s []xep0115lesser }
+
+func (s *xep0115sorter) add(c xep0115lesser) { s.s = append(s.s, c) }
+func (s *xep0115sorter) Len() int            { return len(s.s) }
+func (s *xep0115sorter) Swap(i, j int)       { s.s[i], s.s[j] = s.s[j], s.s[i] }
+func (s *xep0115sorter) Less(i, j int) bool  { return s.s[i].xep0115less(s.s[j]) }
+
+func (a *DiscoveryIdentity) xep0115less(other interface{}) bool {
+	b := other.(*DiscoveryIdentity)
+	if a.Category != b.Category {
+		return a.Category < b.Category
+	}
+	if a.Type != b.Type {
+		return a.Type < b.Type
+	}
+	return a.Lang < b.Lang
+}
+
+func (a *DiscoveryFeature) xep0115less(other interface{}) bool {
+	b := other.(*DiscoveryFeature)
+	return a.Var < b.Var
+}
+
+func (a *FormField) xep0115less(other interface{}) bool {
+	b := other.(*FormField)
+	if a.Var == "FORM_TYPE" {
+		return true
+	} else if b.Var == "FORM_TYPE" {
+		return false
+	}
+	return a.Var < b.Var
 }
 
 type VersionQuery struct {
