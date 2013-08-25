@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,12 +26,12 @@ import (
 )
 
 const (
-	nsStream  = "http://etherx.jabber.org/streams"
-	nsTLS     = "urn:ietf:params:xml:ns:xmpp-tls"
-	nsSASL    = "urn:ietf:params:xml:ns:xmpp-sasl"
-	nsBind    = "urn:ietf:params:xml:ns:xmpp-bind"
-	nsSession = "urn:ietf:params:xml:ns:xmpp-session"
-	nsClient  = "jabber:client"
+	NsStream  = "http://etherx.jabber.org/streams"
+	NsTLS     = "urn:ietf:params:xml:ns:xmpp-tls"
+	NsSASL    = "urn:ietf:params:xml:ns:xmpp-sasl"
+	NsBind    = "urn:ietf:params:xml:ns:xmpp-bind"
+	NsSession = "urn:ietf:params:xml:ns:xmpp-session"
+	NsClient  = "jabber:client"
 )
 
 // RemoveResourceFromJid returns the user@domain portion of a JID.
@@ -51,8 +52,9 @@ type Conn struct {
 	nextCookie Cookie
 	archive    bool
 
-	lock      sync.Mutex
-	inflights map[Cookie]chan<- Stanza
+	lock          sync.Mutex
+	inflights     map[Cookie]chan<- Stanza
+	customStorage map[xml.Name]reflect.Type
 }
 
 // Stanza represents a message from the XMPP server.
@@ -75,7 +77,7 @@ func (c *Conn) getCookie() Cookie {
 // the stanza for processing.
 func (c *Conn) Next() (stanza Stanza, err error) {
 	for {
-		if stanza.Name, stanza.Value, err = next(c.in); err != nil {
+		if stanza.Name, stanza.Value, err = next(c); err != nil {
 			return
 		}
 
@@ -226,9 +228,27 @@ func (c *Conn) SignalPresence(state string) error {
 	return err
 }
 
+func (c *Conn) SendStanza(s interface{}) error {
+	return xml.NewEncoder(c.out).Encode(s)
+}
+
+func (c *Conn) SetCustomStorage(space, local string, s interface{}) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if c.customStorage == nil {
+		c.customStorage = make(map[xml.Name]reflect.Type)
+	}
+	key := xml.Name{Space: space, Local: local}
+	if s == nil {
+		delete(c.customStorage, key)
+	} else {
+		c.customStorage[key] = reflect.TypeOf(s)
+	}
+}
+
 // rfc3920 section 5.2
 func (c *Conn) getFeatures(domain string) (features streamFeatures, err error) {
-	if _, err = fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream to='%s' xmlns='%s' xmlns:stream='%s' version='1.0'>\n", xmlEscape(domain), nsClient, nsStream); err != nil {
+	if _, err = fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream to='%s' xmlns='%s' xmlns:stream='%s' version='1.0'>\n", xmlEscape(domain), NsClient, NsStream); err != nil {
 		return
 	}
 
@@ -236,7 +256,7 @@ func (c *Conn) getFeatures(domain string) (features streamFeatures, err error) {
 	if err != nil {
 		return
 	}
-	if se.Name.Space != nsStream || se.Name.Local != "stream" {
+	if se.Name.Space != NsStream || se.Name.Local != "stream" {
 		err = errors.New("xmpp: expected <stream> but got <" + se.Name.Local + "> in " + se.Name.Space)
 		return
 	}
@@ -268,10 +288,10 @@ func (c *Conn) authenticate(features streamFeatures, user, password string) (err
 	raw := "\x00" + user + "\x00" + password
 	enc := make([]byte, base64.StdEncoding.EncodedLen(len(raw)))
 	base64.StdEncoding.Encode(enc, []byte(raw))
-	fmt.Fprintf(c.rawOut, "<auth xmlns='%s' mechanism='PLAIN'>%s</auth>\n", nsSASL, enc)
+	fmt.Fprintf(c.rawOut, "<auth xmlns='%s' mechanism='PLAIN'>%s</auth>\n", NsSASL, enc)
 
 	// Next message should be either success or failure.
-	name, val, err := next(c.in)
+	name, val, err := next(c)
 	switch v := val.(type) {
 	case *saslSuccess:
 	case *saslFailure:
@@ -379,13 +399,13 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 		return nil, errors.New("xmpp: server doesn't support TLS")
 	}
 
-	fmt.Fprintf(c.out, "<starttls xmlns='%s'/>", nsTLS)
+	fmt.Fprintf(c.out, "<starttls xmlns='%s'/>", NsTLS)
 
 	proceed, err := nextStart(c.in)
 	if err != nil {
 		return nil, err
 	}
-	if proceed.Name.Space != nsTLS || proceed.Name.Local != "proceed" {
+	if proceed.Name.Space != NsTLS || proceed.Name.Local != "proceed" {
 		return nil, errors.New("xmpp: expected <proceed> after <starttls> but got <" + proceed.Name.Local + "> in " + proceed.Name.Space)
 	}
 
@@ -479,7 +499,7 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 	}
 
 	// Send IQ message asking to bind to the local user name.
-	fmt.Fprintf(c.out, "<iq type='set' id='bind_1'><bind xmlns='%s'/></iq>", nsBind)
+	fmt.Fprintf(c.out, "<iq type='set' id='bind_1'><bind xmlns='%s'/></iq>", NsBind)
 	var iq ClientIQ
 	if err = c.in.DecodeElement(&iq, nil); err != nil {
 		return nil, errors.New("unmarshal <iq>: " + err.Error())
@@ -492,7 +512,7 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 	if features.Session != nil {
 		// The server needs a session to be established. See RFC 3921,
 		// section 3.
-		fmt.Fprintf(c.out, "<iq to='%s' type='set' id='sess_1'><session xmlns='%s'/></iq>", domain, nsSession)
+		fmt.Fprintf(c.out, "<iq to='%s' type='set' id='sess_1'><session xmlns='%s'/></iq>", domain, NsSession)
 		if err = c.in.DecodeElement(&iq, nil); err != nil {
 			return nil, errors.New("xmpp: unmarshal <iq>: " + err.Error())
 		}
@@ -649,15 +669,15 @@ type ClientText struct {
 
 type ClientPresence struct {
 	XMLName xml.Name `xml:"jabber:client presence"`
-	From    string   `xml:"from,attr"`
-	Id      string   `xml:"id,attr"`
-	To      string   `xml:"to,attr"`
-	Type    string   `xml:"type,attr"` // error, probe, subscribe, subscribed, unavailable, unsubscribe, unsubscribed
-	Lang    string   `xml:"lang,attr"`
+	From    string   `xml:"from,attr,omitempty"`
+	Id      string   `xml:"id,attr,omitempty"`
+	To      string   `xml:"to,attr,omitempty"`
+	Type    string   `xml:"type,attr,omitempty"` // error, probe, subscribe, subscribed, unavailable, unsubscribe, unsubscribed
+	Lang    string   `xml:"lang,attr,omitempty"`
 
-	Show     string       `xml:"show"`   // away, chat, dnd, xa
-	Status   string       `xml:"status"` // sb []clientText
-	Priority string       `xml:"priority"`
+	Show     string       `xml:"show,omitempty"`   // away, chat, dnd, xa
+	Status   string       `xml:"status,omitempty"` // sb []clientText
+	Priority string       `xml:"priority,omitempty"`
 	Caps     *ClientCaps  `xml:"c"`
 	Error    *ClientError `xml:"error"`
 }
@@ -704,58 +724,50 @@ type RosterEntry struct {
 // Scan XML token stream for next element and save into val.
 // If val == nil, allocate new element based on proto map.
 // Either way, return val.
-func next(p *xml.Decoder) (xml.Name, interface{}, error) {
+func next(c *Conn) (xml.Name, interface{}, error) {
 	// Read start element to find out what type we want.
-	se, err := nextStart(p)
+	se, err := nextStart(c.in)
 	if err != nil {
 		return xml.Name{}, nil, err
 	}
 
 	// Put it in an interface and allocate one.
 	var nv interface{}
-	switch se.Name.Space + " " + se.Name.Local {
-	case nsStream + " features":
-		nv = &streamFeatures{}
-	case nsStream + " error":
-		nv = &streamError{}
-	case nsTLS + " starttls":
-		nv = &tlsStartTLS{}
-	case nsTLS + " proceed":
-		nv = &tlsProceed{}
-	case nsTLS + " failure":
-		nv = &tlsFailure{}
-	case nsSASL + " mechanisms":
-		nv = &saslMechanisms{}
-	case nsSASL + " challenge":
-		nv = ""
-	case nsSASL + " response":
-		nv = ""
-	case nsSASL + " abort":
-		nv = &saslAbort{}
-	case nsSASL + " success":
-		nv = &saslSuccess{}
-	case nsSASL + " failure":
-		nv = &saslFailure{}
-	case nsBind + " bind":
-		nv = &bindBind{}
-	case nsClient + " message":
-		nv = &ClientMessage{}
-	case nsClient + " presence":
-		nv = &ClientPresence{}
-	case nsClient + " iq":
-		nv = &ClientIQ{}
-	case nsClient + " error":
-		nv = &ClientError{}
-	default:
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if t, e := c.customStorage[se.Name]; e {
+		nv = reflect.New(t).Interface()
+	} else if t, e := defaultStorage[se.Name]; e {
+		nv = reflect.New(t).Interface()
+	} else {
 		return xml.Name{}, nil, errors.New("unexpected XMPP message " +
 			se.Name.Space + " <" + se.Name.Local + "/>")
 	}
 
 	// Unmarshal into that storage.
-	if err = p.DecodeElement(nv, &se); err != nil {
+	if err = c.in.DecodeElement(nv, &se); err != nil {
 		return xml.Name{}, nil, err
 	}
 	return se.Name, nv, err
+}
+
+var defaultStorage = map[xml.Name]reflect.Type{
+	xml.Name{Space: NsStream, Local: "features"}: reflect.TypeOf(streamFeatures{}),
+	xml.Name{Space: NsStream, Local: "error"}:    reflect.TypeOf(streamError{}),
+	xml.Name{Space: NsTLS, Local: "starttls"}:    reflect.TypeOf(tlsStartTLS{}),
+	xml.Name{Space: NsTLS, Local: "proceed"}:     reflect.TypeOf(tlsProceed{}),
+	xml.Name{Space: NsTLS, Local: "failure"}:     reflect.TypeOf(tlsFailure{}),
+	xml.Name{Space: NsSASL, Local: "mechanisms"}: reflect.TypeOf(saslMechanisms{}),
+	xml.Name{Space: NsSASL, Local: "challenge"}:  reflect.TypeOf(""),
+	xml.Name{Space: NsSASL, Local: "response"}:   reflect.TypeOf(""),
+	xml.Name{Space: NsSASL, Local: "abort"}:      reflect.TypeOf(saslAbort{}),
+	xml.Name{Space: NsSASL, Local: "success"}:    reflect.TypeOf(saslSuccess{}),
+	xml.Name{Space: NsSASL, Local: "failure"}:    reflect.TypeOf(saslFailure{}),
+	xml.Name{Space: NsBind, Local: "bind"}:       reflect.TypeOf(bindBind{}),
+	xml.Name{Space: NsClient, Local: "message"}:  reflect.TypeOf(ClientMessage{}),
+	xml.Name{Space: NsClient, Local: "presence"}: reflect.TypeOf(ClientPresence{}),
+	xml.Name{Space: NsClient, Local: "iq"}:       reflect.TypeOf(ClientIQ{}),
+	xml.Name{Space: NsClient, Local: "error"}:    reflect.TypeOf(ClientError{}),
 }
 
 type DiscoveryReply struct {
