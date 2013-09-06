@@ -825,7 +825,7 @@ func (r *DiscoveryReply) VerificationString() (string, error) {
 	h := sha1.New()
 
 	seen := make(map[string]bool)
-	identitySorter := &xep0115sorter{}
+	identitySorter := &xep0115Sorter{}
 	for i := range r.Identities {
 		identitySorter.add(&r.Identities[i])
 	}
@@ -841,7 +841,7 @@ func (r *DiscoveryReply) VerificationString() (string, error) {
 	}
 
 	seen = make(map[string]bool)
-	featureSorter := &xep0115sorter{}
+	featureSorter := &xep0115Sorter{}
 	for i := range r.Features {
 		featureSorter.add(&r.Features[i])
 	}
@@ -860,7 +860,7 @@ func (r *DiscoveryReply) VerificationString() (string, error) {
 		if len(f.Fields) == 0 {
 			continue
 		}
-		fieldSorter := &xep0115sorter{}
+		fieldSorter := &xep0115Sorter{}
 		for i := range f.Fields {
 			fieldSorter.add(&f.Fields[i])
 		}
@@ -894,18 +894,18 @@ func (r *DiscoveryReply) VerificationString() (string, error) {
 	return base64.StdEncoding.EncodeToString(h.Sum(nil)), nil
 }
 
-type xep0115lesser interface {
-	xep0115less(interface{}) bool
+type xep0115Less interface {
+	xep0115Less(interface{}) bool
 }
 
-type xep0115sorter struct{ s []xep0115lesser }
+type xep0115Sorter struct{ s []xep0115Less }
 
-func (s *xep0115sorter) add(c xep0115lesser) { s.s = append(s.s, c) }
-func (s *xep0115sorter) Len() int            { return len(s.s) }
-func (s *xep0115sorter) Swap(i, j int)       { s.s[i], s.s[j] = s.s[j], s.s[i] }
-func (s *xep0115sorter) Less(i, j int) bool  { return s.s[i].xep0115less(s.s[j]) }
+func (s *xep0115Sorter) add(c xep0115Less)  { s.s = append(s.s, c) }
+func (s *xep0115Sorter) Len() int           { return len(s.s) }
+func (s *xep0115Sorter) Swap(i, j int)      { s.s[i], s.s[j] = s.s[j], s.s[i] }
+func (s *xep0115Sorter) Less(i, j int) bool { return s.s[i].xep0115Less(s.s[j]) }
 
-func (a *DiscoveryIdentity) xep0115less(other interface{}) bool {
+func (a *DiscoveryIdentity) xep0115Less(other interface{}) bool {
 	b := other.(*DiscoveryIdentity)
 	if a.Category != b.Category {
 		return a.Category < b.Category
@@ -916,12 +916,12 @@ func (a *DiscoveryIdentity) xep0115less(other interface{}) bool {
 	return a.Lang < b.Lang
 }
 
-func (a *DiscoveryFeature) xep0115less(other interface{}) bool {
+func (a *DiscoveryFeature) xep0115Less(other interface{}) bool {
 	b := other.(*DiscoveryFeature)
 	return a.Var < b.Var
 }
 
-func (a *FormField) xep0115less(other interface{}) bool {
+func (a *FormField) xep0115Less(other interface{}) bool {
 	b := other.(*FormField)
 	if a.Var == "FORM_TYPE" {
 		return true
