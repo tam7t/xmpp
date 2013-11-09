@@ -361,7 +361,8 @@ type Config struct {
 	// leaf certificate, or may be empty to use normal X.509 verification.
 	// If this is specified then normal X.509 verification is disabled.
 	ServerCertificateSHA256 []byte
-	// SkipTLS skips tls
+	// SkipTLS skips TLS as part of XMPP.
+	// TLS can still be achieved when using a tls.Conn for this Config.Conn
 	SkipTLS bool
 }
 
