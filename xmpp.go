@@ -361,6 +361,8 @@ type Config struct {
 	// leaf certificate, or may be empty to use normal X.509 verification.
 	// If this is specified then normal X.509 verification is disabled.
 	ServerCertificateSHA256 []byte
+	// SkipTLS skips tls
+	SkipTLS bool
 }
 
 // Dial creates a new connection to an XMPP server, authenticates as the
@@ -395,78 +397,82 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 		return nil, err
 	}
 
-	if features.StartTLS.XMLName.Local == "" {
-		return nil, errors.New("xmpp: server doesn't support TLS")
-	}
-
-	fmt.Fprintf(c.out, "<starttls xmlns='%s'/>", NsTLS)
-
-	proceed, err := nextStart(c.in)
-	if err != nil {
-		return nil, err
-	}
-	if proceed.Name.Space != NsTLS || proceed.Name.Local != "proceed" {
-		return nil, errors.New("xmpp: expected <proceed> after <starttls> but got <" + proceed.Name.Local + "> in " + proceed.Name.Space)
-	}
-
-	if log != nil {
-		io.WriteString(log, "Starting TLS handshake\n")
-	}
-
-	haveCertHash := len(config.ServerCertificateSHA256) != 0
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: haveCertHash,
-	}
-
-	tlsConn := tls.Client(conn, tlsConfig)
-	if err := tlsConn.Handshake(); err != nil {
-		return nil, err
-	}
-
-	tlsState := tlsConn.ConnectionState()
-	if haveCertHash {
-		h := sha256.New()
-		h.Write(tlsState.PeerCertificates[0].Raw)
-		if digest := h.Sum(nil); !bytes.Equal(digest, config.ServerCertificateSHA256) {
-			return nil, fmt.Errorf("xmpp: server certificate does not match expected hash (got: %x, want: %x)", digest, config.ServerCertificateSHA256)
+	if !config.SkipTLS {
+		if features.StartTLS.XMLName.Local == "" {
+			return nil, errors.New("xmpp: server doesn't support TLS")
 		}
-	} else {
-		if len(tlsState.VerifiedChains) == 0 {
-			return nil, errors.New("xmpp: failed to verify TLS certificate")
+
+		fmt.Fprintf(c.out, "<starttls xmlns='%s'/>", NsTLS)
+
+		proceed, err := nextStart(c.in)
+		if err != nil {
+			return nil, err
+		}
+		if proceed.Name.Space != NsTLS || proceed.Name.Local != "proceed" {
+			return nil, errors.New("xmpp: expected <proceed> after <starttls> but got <" + proceed.Name.Local + "> in " + proceed.Name.Space)
 		}
 
 		if log != nil {
-			for i, cert := range tlsState.VerifiedChains[0] {
-				fmt.Fprintf(log, "  certificate %d: %s\n", i, certName(cert))
+			io.WriteString(log, "Starting TLS handshake\n")
+		}
+
+		haveCertHash := len(config.ServerCertificateSHA256) != 0
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: haveCertHash,
+		}
+
+		tlsConn := tls.Client(conn, tlsConfig)
+		if err := tlsConn.Handshake(); err != nil {
+			return nil, err
+		}
+
+		tlsState := tlsConn.ConnectionState()
+		if haveCertHash {
+			h := sha256.New()
+			h.Write(tlsState.PeerCertificates[0].Raw)
+			if digest := h.Sum(nil); !bytes.Equal(digest, config.ServerCertificateSHA256) {
+				return nil, fmt.Errorf("xmpp: server certificate does not match expected hash (got: %x, want: %x)", digest, config.ServerCertificateSHA256)
+			}
+		} else {
+			if len(tlsState.VerifiedChains) == 0 {
+				return nil, errors.New("xmpp: failed to verify TLS certificate")
+			}
+
+			if log != nil {
+				for i, cert := range tlsState.VerifiedChains[0] {
+					fmt.Fprintf(log, "  certificate %d: %s\n", i, certName(cert))
+				}
+			}
+
+			if err := tlsConn.VerifyHostname(domain); err != nil {
+				if config.TrustedAddress {
+					if log != nil {
+						fmt.Fprintf(log, "Certificate fails to verify against domain in username: %s\n", err)
+					}
+					host, _, err := net.SplitHostPort(address)
+					if err != nil {
+						return nil, errors.New("xmpp: failed to split address when checking whether TLS certificate is valid: " + err.Error())
+					}
+					if err = tlsConn.VerifyHostname(host); err != nil {
+						return nil, errors.New("xmpp: failed to match TLS certificate to address after failing to match to username: " + err.Error())
+					}
+					if log != nil {
+						fmt.Fprintf(log, "Certificate matches against trusted server hostname: %s\n", host)
+					}
+				} else {
+					return nil, errors.New("xmpp: failed to match TLS certificate to name: " + err.Error())
+				}
 			}
 		}
 
-		if err := tlsConn.VerifyHostname(domain); err != nil {
-			if config.TrustedAddress {
-				if log != nil {
-					fmt.Fprintf(log, "Certificate fails to verify against domain in username: %s\n", err)
-				}
-				host, _, err := net.SplitHostPort(address)
-				if err != nil {
-					return nil, errors.New("xmpp: failed to split address when checking whether TLS certificate is valid: " + err.Error())
-				}
-				if err = tlsConn.VerifyHostname(host); err != nil {
-					return nil, errors.New("xmpp: failed to match TLS certificate to address after failing to match to username: " + err.Error())
-				}
-				if log != nil {
-					fmt.Fprintf(log, "Certificate matches against trusted server hostname: %s\n", host)
-				}
-			} else {
-				return nil, errors.New("xmpp: failed to match TLS certificate to name: " + err.Error())
-			}
+		c.in, c.out = makeInOut(tlsConn, config)
+		c.rawOut = tlsConn
+
+		if features, err = c.getFeatures(domain); err != nil {
+			return nil, err
 		}
-	}
-
-	c.in, c.out = makeInOut(tlsConn, config)
-	c.rawOut = tlsConn
-
-	if features, err = c.getFeatures(domain); err != nil {
-		return nil, err
+	} else {
+		c.rawOut = conn
 	}
 
 	if config != nil && config.Create {
