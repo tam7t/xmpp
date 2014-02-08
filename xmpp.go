@@ -8,11 +8,13 @@ package xmpp
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -45,12 +47,11 @@ func RemoveResourceFromJid(jid string) string {
 
 // Conn represents a connection to an XMPP server.
 type Conn struct {
-	out        io.Writer
-	rawOut     io.Writer // doesn't log. Used for <auth>
-	in         *xml.Decoder
-	jid        string
-	nextCookie Cookie
-	archive    bool
+	out     io.Writer
+	rawOut  io.Writer // doesn't log. Used for <auth>
+	in      *xml.Decoder
+	jid     string
+	archive bool
 
 	lock          sync.Mutex
 	inflights     map[Cookie]chan<- Stanza
@@ -67,9 +68,11 @@ type Stanza struct {
 type Cookie uint64
 
 func (c *Conn) getCookie() Cookie {
-	ret := c.nextCookie
-	c.nextCookie++
-	return ret
+	var buf [8]byte
+	if _, err := rand.Reader.Read(buf[:]); err != nil {
+		panic("Failed to read random bytes: " + err.Error())
+	}
+	return Cookie(binary.LittleEndian.Uint64(buf[:]))
 }
 
 // Next reads stanzas from the server. If the stanza is a reply, it dispatches
@@ -83,7 +86,7 @@ func (c *Conn) Next() (stanza Stanza, err error) {
 
 		if iq, ok := stanza.Value.(*ClientIQ); ok && (iq.Type == "result" || iq.Type == "error") {
 			var cookieValue uint64
-			if cookieValue, err = strconv.ParseUint(iq.Id, 10, 64); err != nil {
+			if cookieValue, err = strconv.ParseUint(iq.Id, 16, 64); err != nil {
 				err = errors.New("xmpp: failed to parse id from iq: " + err.Error())
 				return
 			}
@@ -168,7 +171,7 @@ func (c *Conn) SendIQ(to, typ string, value interface{}) (reply chan Stanza, coo
 	if len(to) > 0 {
 		toAttr = "to='" + xmlEscape(to) + "'"
 	}
-	if _, err = fmt.Fprintf(c.out, "<iq %s from='%s' type='%s' id='%d'>", toAttr, xmlEscape(c.jid), xmlEscape(typ), cookie); err != nil {
+	if _, err = fmt.Fprintf(c.out, "<iq %s from='%s' type='%s' id='%x'>", toAttr, xmlEscape(c.jid), xmlEscape(typ), cookie); err != nil {
 		return
 	}
 	if _, ok := value.(EmptyReply); !ok {
