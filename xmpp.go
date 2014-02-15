@@ -45,6 +45,16 @@ func RemoveResourceFromJid(jid string) string {
 	return jid
 }
 
+// domainFromJid returns the domain of a full or bare JID.
+func domainFromJid(jid string) string {
+	jid = RemoveResourceFromJid(jid)
+	at := strings.Index(jid, "@")
+	if at != -1 {
+		return jid[at+1:]
+	}
+	return jid
+}
+
 // Conn represents a connection to an XMPP server.
 type Conn struct {
 	out     io.Writer
@@ -54,8 +64,17 @@ type Conn struct {
 	archive bool
 
 	lock          sync.Mutex
-	inflights     map[Cookie]chan<- Stanza
+	inflights     map[Cookie]inflight
 	customStorage map[xml.Name]reflect.Type
+}
+
+// inflight contains the details of a pending request to which we are awaiting
+// a reply.
+type inflight struct {
+	// replyChan is the channel to which we'll send the reply.
+	replyChan chan<- Stanza
+	// to is the address to which we sent the request.
+	to string
 }
 
 // Stanza represents a message from the XMPP server.
@@ -93,15 +112,34 @@ func (c *Conn) Next() (stanza Stanza, err error) {
 			cookie := Cookie(cookieValue)
 
 			c.lock.Lock()
-			ch, ok := c.inflights[cookie]
-			if ok {
-				delete(c.inflights, cookie)
-			}
+			inflight, ok := c.inflights[cookie]
 			c.lock.Unlock()
 
-			if ok {
-				ch <- stanza
+			if !ok {
+				continue
 			}
+
+			if len(inflight.to) > 0 {
+				// The reply must come from the address to
+				// which we sent the request.
+				if inflight.to != iq.From {
+					continue
+				}
+			} else {
+				// If there was no destination on the request
+				// then the matching is more complex because
+				// servers differ in how they construct the
+				// reply.
+				if len(iq.From) > 0 && iq.From != c.jid && iq.From != RemoveResourceFromJid(c.jid) && iq.From != domainFromJid(c.jid) {
+					continue
+				}
+			}
+
+			c.lock.Lock()
+			delete(c.inflights, cookie)
+			c.lock.Unlock()
+
+			inflight.replyChan <- stanza
 			continue
 		}
 
@@ -116,13 +154,13 @@ func (c *Conn) Cancel(cookie Cookie) bool {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	ch, ok := c.inflights[cookie]
+	inflight, ok := c.inflights[cookie]
 	if !ok {
 		return false
 	}
 
 	delete(c.inflights, cookie)
-	close(ch)
+	close(inflight.replyChan)
 	return true
 }
 
@@ -139,7 +177,7 @@ func (c *Conn) RequestRoster() (<-chan Stanza, Cookie, error) {
 	defer c.lock.Unlock()
 
 	ch := make(chan Stanza, 1)
-	c.inflights[cookie] = ch
+	c.inflights[cookie] = inflight{ch, ""}
 	return ch, cookie, nil
 }
 
@@ -183,7 +221,7 @@ func (c *Conn) SendIQ(to, typ string, value interface{}) (reply chan Stanza, coo
 		return
 	}
 
-	c.inflights[cookie] = reply
+	c.inflights[cookie] = inflight{reply, to}
 	return
 }
 
@@ -373,7 +411,7 @@ type Config struct {
 // given user.
 func Dial(address, user, domain, password string, config *Config) (c *Conn, err error) {
 	c = new(Conn)
-	c.inflights = make(map[Cookie]chan<- Stanza)
+	c.inflights = make(map[Cookie]inflight)
 	c.archive = config.Archive
 
 	var log io.Writer
