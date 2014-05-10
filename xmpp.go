@@ -460,7 +460,8 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 
 		haveCertHash := len(config.ServerCertificateSHA256) != 0
 		tlsConfig := &tls.Config{
-			InsecureSkipVerify: haveCertHash,
+			ServerName: domain,
+			InsecureSkipVerify: true,
 		}
 
 		tlsConn := tls.Client(conn, tlsConfig)
@@ -476,12 +477,23 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 				return nil, fmt.Errorf("xmpp: server certificate does not match expected hash (got: %x, want: %x)", digest, config.ServerCertificateSHA256)
 			}
 		} else {
-			if len(tlsState.VerifiedChains) == 0 {
-				return nil, errors.New("xmpp: failed to verify TLS certificate")
+			if len(tlsState.PeerCertificates) == 0 {
+				return nil, errors.New("xmpp: server has no certificates")
+			}
+
+			opts := x509.VerifyOptions{
+				Intermediates: x509.NewCertPool(),
+			}
+			for _, cert := range tlsState.PeerCertificates[1:] {
+				opts.Intermediates.AddCert(cert)
+			}
+			verifiedChains, err := tlsState.PeerCertificates[0].Verify(opts)
+			if err != nil {
+				return nil, errors.New("xmpp: failed to verify TLS certificate: " + err.Error())
 			}
 
 			if log != nil {
-				for i, cert := range tlsState.VerifiedChains[0] {
+				for i, cert := range verifiedChains[0] {
 					fmt.Fprintf(log, "  certificate %d: %s\n", i, certName(cert))
 				}
 			}
