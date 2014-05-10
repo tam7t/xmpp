@@ -707,6 +707,15 @@ type bindBind struct {
 	Jid      string   `xml:"jid"`
 }
 
+// XEP-0203: Delayed Delivery of <message/> and <presence/> stanzas.
+type Delay struct {
+	XMLName xml.Name `xml:"urn:xmpp:delay delay"`
+	From    string   `xml:"from,attr,omitempty"`
+	Stamp   string   `xml:"stamp,attr"`
+
+	Body    string   `xml:",chardata"`
+}
+
 // RFC 3921  B.1  jabber:client
 type ClientMessage struct {
 	XMLName xml.Name `xml:"jabber:client message"`
@@ -720,6 +729,7 @@ type ClientMessage struct {
 	Subject string `xml:"subject"`
 	Body    string `xml:"body"`
 	Thread  string `xml:"thread"`
+	Delay   *Delay  `xml:"delay,omitempty"`
 }
 
 type ClientText struct {
@@ -740,6 +750,7 @@ type ClientPresence struct {
 	Priority string       `xml:"priority,omitempty"`
 	Caps     *ClientCaps  `xml:"c"`
 	Error    *ClientError `xml:"error"`
+	Delay    Delay        `xml:"delay"`
 }
 
 type ClientCaps struct {
