@@ -389,8 +389,10 @@ type Config struct {
 	// Log is an optional Writer which receives human readable log messages
 	// during the connection.
 	Log io.Writer
-	// Create, if true, causes a new account to be created on the server.
-	Create bool
+	// CreateCallback, if not nil, causes a new account to be created on
+	// the server. The callback is needed in order to be able to handle
+	// XMPP forms.
+	CreateCallback FormCallback
 	// TrustedAddress, if true, means that the address passed to Dial is
 	// trusted and that certificates for that name should be accepted.
 	TrustedAddress bool
@@ -460,7 +462,7 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 
 		haveCertHash := len(config.ServerCertificateSHA256) != 0
 		tlsConfig := &tls.Config{
-			ServerName: domain,
+			ServerName:         domain,
 			InsecureSkipVerify: true,
 		}
 
@@ -529,16 +531,42 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 		c.rawOut = conn
 	}
 
-	if config != nil && config.Create {
+	if config != nil && config.CreateCallback != nil {
 		if log != nil {
 			io.WriteString(log, "Attempting to create account\n")
 		}
-		fmt.Fprintf(c.rawOut, "<iq type='set' id='create_1'><query xmlns='jabber:iq:register'><username>%s</username><password>%s</password></query></iq>", user, password)
+		fmt.Fprintf(c.out, "<iq type='get' id='create_1'><query xmlns='jabber:iq:register'/></iq>")
 		var iq ClientIQ
 		if err = c.in.DecodeElement(&iq, nil); err != nil {
 			return nil, errors.New("unmarshal <iq>: " + err.Error())
 		}
-		if iq.Type == "error" {
+		if iq.Type != "result" {
+			return nil, errors.New("xmpp: account creation failed")
+		}
+		var register RegisterQuery
+		if err := xml.NewDecoder(bytes.NewBuffer(iq.Query)).Decode(&register); err != nil {
+			return nil, err
+		}
+
+		if len(register.Form.Type) > 0 {
+			reply, err := processForm(&register.Form, register.Datas, config.CreateCallback)
+			fmt.Fprintf(c.rawOut, "<iq type='set' id='create_2'><query xmlns='jabber:iq:register'>")
+			if err = xml.NewEncoder(c.rawOut).Encode(reply); err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(c.rawOut, "</query></iq>")
+		} else if register.Username != nil && register.Password != nil {
+			// Try the old-style registration.
+			fmt.Fprintf(c.rawOut, "<iq type='set' id='create_2'><query xmlns='jabber:iq:register'><username>%s</username><password>%s</password></query></iq>", user, password)
+		}
+		if err != nil {
+			return nil, err
+		}
+		var iq2 ClientIQ
+		if err = c.in.DecodeElement(&iq2, nil); err != nil {
+			return nil, errors.New("unmarshal <iq>: " + err.Error())
+		}
+		if iq2.Type == "error" {
 			return nil, errors.New("xmpp: account creation failed")
 		}
 	}
@@ -713,7 +741,7 @@ type Delay struct {
 	From    string   `xml:"from,attr,omitempty"`
 	Stamp   string   `xml:"stamp,attr"`
 
-	Body    string   `xml:",chardata"`
+	Body string `xml:",chardata"`
 }
 
 // RFC 3921  B.1  jabber:client
@@ -729,7 +757,7 @@ type ClientMessage struct {
 	Subject string `xml:"subject"`
 	Body    string `xml:"body"`
 	Thread  string `xml:"thread"`
-	Delay   *Delay  `xml:"delay,omitempty"`
+	Delay   *Delay `xml:"delay,omitempty"`
 }
 
 type ClientText struct {
@@ -790,6 +818,22 @@ type RosterEntry struct {
 	Subscription string   `xml:"subscription,attr"`
 	Name         string   `xml:"name,attr"`
 	Group        []string `xml:"group"`
+}
+
+type RegisterQuery struct {
+	XMLName  xml.Name  `xml:"jabber:iq:register query"`
+	Username *xml.Name `xml:"username"`
+	Password *xml.Name `xml:"password"`
+	Form     Form      `xml:"x"`
+	Datas    []bobData `xml:"data"`
+}
+
+// bobData is a data element from http://xmpp.org/extensions/xep-0231.html.
+type bobData struct {
+	XMLName  xml.Name `xml:"urn:xmpp:bob data"`
+	CID      string   `xml:"cid,attr"`
+	MIMEType string   `xml:"type,attr"`
+	Base64   string   `xml:",chardata"`
 }
 
 // Scan XML token stream for next element and save into val.
@@ -867,27 +911,288 @@ type Form struct {
 	Type         string      `xml:"type,attr"`
 	Title        string      `xml:"title,omitempty"`
 	Instructions string      `xml:"instructions,omitempty"`
-	Fields       []FormField `xml:"field"`
+	Fields       []formField `xml:"field"`
 }
 
-type FormField struct {
+type formField struct {
 	XMLName  xml.Name           `xml:"field"`
 	Desc     string             `xml:"desc,omitempty"`
 	Var      string             `xml:"var,attr"`
 	Type     string             `xml:"type,attr,omitempty"`
 	Label    string             `xml:"label,attr,omitempty"`
-	Required *FormFieldRequired `xml:"required"`
+	Required *formFieldRequired `xml:"required"`
 	Values   []string           `xml:"value"`
-	Options  []FormFieldOption  `xml:"option"`
+	Options  []formFieldOption  `xml:"option"`
+	Media    []formFieldMedia   `xml:"media"`
 }
 
-type FormFieldRequired struct {
+type formFieldMedia struct {
+	XMLName xml.Name   `xml:"urn:xmpp:media-element media"`
+	URIs    []mediaURI `xml:"uri"`
+}
+
+type mediaURI struct {
+	XMLName  xml.Name `xml:"urn:xmpp:media-element uri"`
+	MIMEType string   `xml:"type,attr,omitempty"`
+	URI      string   `xml:",chardata"`
+}
+
+type formFieldRequired struct {
 	XMLName xml.Name `xml:"required"`
 }
 
-type FormFieldOption struct {
-	Label string   `xml:"var,attr,omitempty"`
-	Value []string `xml:"value"`
+type formFieldOption struct {
+	Label string `xml:"var,attr,omitempty"`
+	Value string `xml:"value"`
+}
+
+// FormField is the type of a generic form field. One should type cast to a
+// specific type of field before processing.
+type FormField struct {
+	// Label is a human readable label for this field.
+	Label string
+	// Type is the XMPP-internal type of this field. One should type cast
+	// rather than inspect this.
+	Type string
+	// Name gives the internal name of the field.
+	Name     string
+	Required bool
+	// Media contains one of more items of media associated with this
+	// field and, for each item, one or more representations of it.
+	Media [][]Media
+}
+
+type Media struct {
+	MIMEType string
+	// URI contains a URI to the data. It may be empty if Data is not.
+	URI string
+	// Data contains the raw data itself. It may be empty if URI is not.
+	Data []byte
+}
+
+// FixedFormField is used to indicate a section heading. It's for the form to
+// send data to the user rather than the other way around.
+type FixedFormField struct {
+	FormField
+
+	Text string
+}
+
+// BooleanFormField is for a yes/no answer. The Result member should be set to
+// the user's answer.
+type BooleanFormField struct {
+	FormField
+
+	Result bool
+}
+
+// TextFormField is for the entry of a single textual item. The Result member
+// should be set to the data entered.
+type TextFormField struct {
+	FormField
+
+	Default string
+	Result  string
+	// Private is true if this is a password or other sensitive entry.
+	Private bool
+}
+
+// MultiTextFormField is for the entry of a several textual items. The Results
+// member should be set to the data entered.
+type MultiTextFormField struct {
+	FormField
+
+	Defaults []string
+	Results  []string
+}
+
+// SelectionFormField asks the user to pick a single element from a set of
+// choices. The Result member should be set to an index of the Values array.
+type SelectionFormField struct {
+	FormField
+
+	Values []string
+	Ids    []string
+	Result int
+}
+
+// MultiSelectionFormField asks the user to pick a subset of possible choices.
+// The Result member should be set to a series of indexes of the Results array.
+type MultiSelectionFormField struct {
+	FormField
+
+	Values  []string
+	Ids     []string
+	Results []int
+}
+
+// FormCallback is the type of a function called to process a form. The
+// argument is a list of pointers to FormField types. The function should type
+// cast the elements, prompt the user and fill in the result field in each
+// struct.
+type FormCallback func(title, instructions string, fields []interface{}) error
+
+// processForm calls the callback with the given XMPP form and returns the
+// result form. The datas argument contains any additional XEP-0231 blobs that
+// might contain media for the questions in the form.
+func processForm(form *Form, datas []bobData, callback FormCallback) (*Form, error) {
+	var fields []interface{}
+
+	for _, field := range form.Fields {
+		base := FormField{
+			Label:    field.Label,
+			Type:     field.Type,
+			Name:     field.Var,
+			Required: field.Required != nil,
+		}
+
+		for _, media := range field.Media {
+			var options []Media
+			for _, uri := range media.URIs {
+				media := Media{
+					MIMEType: uri.MIMEType,
+					URI:      uri.URI,
+				}
+				if strings.HasPrefix(media.URI, "cid:") {
+					// cid URIs are references to data
+					// blobs that, hopefully, were sent
+					// along with the form.
+					cid := media.URI[4:]
+					media.URI = ""
+
+					for _, data := range datas {
+						if data.CID == cid {
+							var err error
+							if media.Data, err = base64.StdEncoding.DecodeString(data.Base64); err != nil {
+								media.Data = nil
+							}
+						}
+					}
+				}
+				if len(media.URI) > 0 || len(media.Data) > 0 {
+					options = append(options, media)
+				}
+			}
+
+			base.Media = append(base.Media, options)
+		}
+
+		switch field.Type {
+		case "fixed":
+			if len(field.Values) < 1 {
+				continue
+			}
+			f := &FixedFormField{
+				FormField: base,
+				Text:      field.Values[0],
+			}
+			fields = append(fields, f)
+		case "boolean":
+			f := &BooleanFormField{
+				FormField: base,
+			}
+			fields = append(fields, f)
+		case "jid-multi", "text-multi":
+			f := &MultiTextFormField{
+				FormField: base,
+				Defaults:  field.Values,
+			}
+			fields = append(fields, f)
+		case "list-single":
+			f := &SelectionFormField{
+				FormField: base,
+			}
+			for _, opt := range field.Options {
+				f.Ids = append(f.Ids, opt.Value)
+				f.Values = append(f.Values, opt.Label)
+			}
+			fields = append(fields, f)
+		case "list-multi":
+			f := &MultiSelectionFormField{
+				FormField: base,
+			}
+			for _, opt := range field.Options {
+				f.Ids = append(f.Ids, opt.Value)
+				f.Values = append(f.Values, opt.Label)
+			}
+			fields = append(fields, f)
+		case "hidden":
+			continue
+		default:
+			f := &TextFormField{
+				FormField: base,
+				Private:   field.Type == "text-private",
+			}
+			if len(field.Values) > 0 {
+				f.Default = field.Values[0]
+			}
+			fields = append(fields, f)
+		}
+	}
+
+	if err := callback(form.Title, form.Instructions, fields); err != nil {
+		return nil, err
+	}
+
+	result := &Form{
+		Type: "submit",
+	}
+
+	// Copy the hidden fields across.
+	for _, field := range form.Fields {
+		if field.Type != "hidden" {
+			continue
+		}
+		result.Fields = append(result.Fields, formField{
+			Var:    field.Var,
+			Values: field.Values,
+		})
+	}
+
+	for _, field := range fields {
+		switch field := field.(type) {
+		case *BooleanFormField:
+			value := "false"
+			if field.Result {
+				value = "true"
+			}
+			result.Fields = append(result.Fields, formField{
+				Var:    field.Name,
+				Values: []string{value},
+			})
+		case *TextFormField:
+			result.Fields = append(result.Fields, formField{
+				Var:    field.Name,
+				Values: []string{field.Result},
+			})
+		case *MultiTextFormField:
+			result.Fields = append(result.Fields, formField{
+				Var:    field.Name,
+				Values: field.Results,
+			})
+		case *SelectionFormField:
+			result.Fields = append(result.Fields, formField{
+				Var:    field.Name,
+				Values: []string{field.Ids[field.Result]},
+			})
+		case *MultiSelectionFormField:
+			var values []string
+			for _, selected := range field.Results {
+				values = append(values, field.Ids[selected])
+			}
+
+			result.Fields = append(result.Fields, formField{
+				Var:    field.Name,
+				Values: values,
+			})
+		case *FixedFormField:
+			continue
+		default:
+			panic(fmt.Sprintf("unknown field type in result from callback: %T", field))
+		}
+	}
+
+	return result, nil
 }
 
 // VerificationString returns a SHA-1 verification string as defined in XEP-0115.
@@ -936,7 +1241,7 @@ func (r *DiscoveryReply) VerificationString() (string, error) {
 			fieldSorter.add(&f.Fields[i])
 		}
 		sort.Sort(fieldSorter)
-		formTypeField := fieldSorter.s[0].(*FormField)
+		formTypeField := fieldSorter.s[0].(*formField)
 		if formTypeField.Var != "FORM_TYPE" {
 			continue
 		}
@@ -952,7 +1257,7 @@ func (r *DiscoveryReply) VerificationString() (string, error) {
 		}
 		io.WriteString(h, formTypeField.Values[0]+"<")
 		for _, field := range fieldSorter.s[1:] {
-			field := field.(*FormField)
+			field := field.(*formField)
 			io.WriteString(h, field.Var+"<")
 			values := append([]string{}, field.Values...)
 			sort.Strings(values)
@@ -992,8 +1297,8 @@ func (a *DiscoveryFeature) xep0115Less(other interface{}) bool {
 	return a.Var < b.Var
 }
 
-func (a *FormField) xep0115Less(other interface{}) bool {
-	b := other.(*FormField)
+func (a *formField) xep0115Less(other interface{}) bool {
+	b := other.(*formField)
 	if a.Var == "FORM_TYPE" {
 		return true
 	} else if b.Var == "FORM_TYPE" {
