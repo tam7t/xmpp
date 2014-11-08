@@ -677,7 +677,7 @@ type streamFeatures struct {
 	Session *string `xml:"session"`
 }
 
-type streamError struct {
+type StreamError struct {
 	XMLName xml.Name `xml:"http://etherx.jabber.org/streams error"`
 	Any     xml.Name `xml:",any"`
 	Text    string   `xml:"text"`
@@ -868,7 +868,7 @@ func next(c *Conn) (xml.Name, interface{}, error) {
 
 var defaultStorage = map[xml.Name]reflect.Type{
 	xml.Name{Space: NsStream, Local: "features"}: reflect.TypeOf(streamFeatures{}),
-	xml.Name{Space: NsStream, Local: "error"}:    reflect.TypeOf(streamError{}),
+	xml.Name{Space: NsStream, Local: "error"}:    reflect.TypeOf(StreamError{}),
 	xml.Name{Space: NsTLS, Local: "starttls"}:    reflect.TypeOf(tlsStartTLS{}),
 	xml.Name{Space: NsTLS, Local: "proceed"}:     reflect.TypeOf(tlsProceed{}),
 	xml.Name{Space: NsTLS, Local: "failure"}:     reflect.TypeOf(tlsFailure{}),
