@@ -409,6 +409,44 @@ type Config struct {
 	SkipTLS bool
 }
 
+var tlsVersionStrings = map[uint16]string{
+	tls.VersionSSL30: "SSL 3.0",
+	tls.VersionTLS10: "TLS 1.0",
+	tls.VersionTLS11: "TLS 1.1",
+	tls.VersionTLS12: "TLS 1.2",
+}
+
+var tlsCipherSuiteNames = map[uint16]string{
+	0x0005: "TLS_RSA_WITH_RC4_128_SHA",
+	0x000a: "TLS_RSA_WITH_3DES_EDE_CBC_SHA",
+	0x002f: "TLS_RSA_WITH_AES_128_CBC_SHA",
+	0x0035: "TLS_RSA_WITH_AES_256_CBC_SHA",
+	0xc007: "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA",
+	0xc009: "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+	0xc00a: "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+	0xc011: "TLS_ECDHE_RSA_WITH_RC4_128_SHA",
+	0xc012: "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA",
+	0xc013: "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+	0xc014: "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+	0xc02f: "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+	0xc02b: "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+}
+
+func printTLSDetails(w io.Writer, tlsState tls.ConnectionState) {
+	version, ok := tlsVersionStrings[tlsState.Version]
+	if !ok {
+		version = "unknown"
+	}
+
+	cipherSuite, ok := tlsCipherSuiteNames[tlsState.CipherSuite]
+	if !ok {
+		cipherSuite = "unknown"
+	}
+
+	fmt.Fprintf(w, "  SSL/TLS version: %s\n", version)
+	fmt.Fprintf(w, "  Cipher suite: %s\n", cipherSuite)
+}
+
 // Dial creates a new connection to an XMPP server, authenticates as the
 // given user.
 func Dial(address, user, domain, password string, config *Config) (c *Conn, err error) {
@@ -472,6 +510,8 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 		}
 
 		tlsState := tlsConn.ConnectionState()
+		printTLSDetails(log, tlsState)
+
 		if haveCertHash {
 			h := sha256.New()
 			h.Write(tlsState.PeerCertificates[0].Raw)
