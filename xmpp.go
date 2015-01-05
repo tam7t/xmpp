@@ -408,6 +408,9 @@ type Config struct {
 	// SkipTLS, if true, causes the TLS handshake to be skipped.
 	// WARNING: this should only be used if Conn is already secure.
 	SkipTLS bool
+	// TLSConfig contains the configuration to be used by the TLS
+	// handshake. If nil, sensible defaults will be used.
+	TLSConfig *tls.Config
 }
 
 var tlsVersionStrings = map[uint16]string{
@@ -496,12 +499,15 @@ func Dial(address, user, domain, password string, config *Config) (c *Conn, err 
 		io.WriteString(log, "Starting TLS handshake\n")
 
 		haveCertHash := len(config.ServerCertificateSHA256) != 0
-		tlsConfig := &tls.Config{
-			ServerName:         domain,
-			InsecureSkipVerify: true,
-		}
 
-		tlsConn := tls.Client(conn, tlsConfig)
+		var tlsConfig tls.Config
+		if config.TLSConfig != nil {
+			tlsConfig = *config.TLSConfig
+		}
+		tlsConfig.ServerName = domain
+		tlsConfig.InsecureSkipVerify = true
+
+		tlsConn := tls.Client(conn, &tlsConfig)
 		if err := tlsConn.Handshake(); err != nil {
 			return nil, err
 		}
