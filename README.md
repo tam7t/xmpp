@@ -11,6 +11,9 @@ following [specifications](http://xmpp.org/xmpp-protocols/xmpp-extensions/):
 * [RFC 6121: XMPP IM](http://xmpp.org/rfcs/rfc6121.html)
 * [RFC 7395: XMPP Subprotocol for WebSocket](http://tools.ietf.org/html/rfc7395)
 * [XEP-0045: Multi-User Chat](http://xmpp.org/extensions/xep-0045.html)
+* [XEP-0198: Stream Management](http://xmpp.org/extensions/xep-0198.html)
+* [XEP-0280: Message Carbons](http://xmpp.org/extensions/xep-0280.html)
+* [XEP-0313: Message Archive Management](http://xmpp.org/extensions/xep-0313.html)
 
 ## Usage
 
