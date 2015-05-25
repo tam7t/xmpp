@@ -101,7 +101,7 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 				panic("bad state")
 			}
 			// TODO: check that se is a stream
-			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", c.getCookie())
+			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", createCookie())
 			fmt.Fprintf(c.out, "<stream:features><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'><required/></starttls></stream:features>")
 			c.state = STATE_FIRST_STREAM
 		case STATE_FIRST_STREAM:
@@ -123,7 +123,7 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 				panic("bad state")
 			}
 			// TODO: ensure check that se is a stream
-			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", c.getCookie())
+			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", createCookie())
 			fmt.Fprintf(c.out, "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>PLAIN</mechanism></mechanisms></stream:features>")
 			c.state = STATE_TLS_START_STREAM
 		case STATE_TLS_START_STREAM:
@@ -171,7 +171,7 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 				log.Error(fmt.Sprintf("%s", err.Error()))
 				panic("bad state--")
 			}
-			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", c.getCookie())
+			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", createCookie())
 			fmt.Fprintf(c.out, "<stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/></stream:features>")
 			c.state = STATE_AUTHED_STREAM
 		case STATE_AUTHED_STREAM:
