@@ -40,9 +40,10 @@ func (l Logger) Error(msg string) (err error) {
 /* Inject account management into xmpp library */
 
 type AccountManager struct {
-	Registered map[string]string
-	lock       sync.Mutex
-	log        Logger
+	Users  map[string]string
+	Online map[string]chan<- interface{}
+	lock   sync.Mutex
+	log    Logger
 }
 
 func (a AccountManager) Authenticate(username, password string) (success bool, err error) {
@@ -51,7 +52,7 @@ func (a AccountManager) Authenticate(username, password string) (success bool, e
 
 	a.log.Info(fmt.Sprintf("authenticate: %s", username))
 
-	if a.Registered[username] == password {
+	if a.Users[username] == password {
 		a.log.Debug("auth success")
 		success = true
 	} else {
@@ -68,58 +69,48 @@ func (a AccountManager) CreateAccount(username, password string) (success bool, 
 
 	a.log.Info(fmt.Sprintf("create account: %s", username))
 
-	if _, err := a.Registered[username]; err {
+	if _, err := a.Users[username]; err {
 		success = false
 	} else {
-		a.Registered[username] = password
+		a.Users[username] = password
 	}
 	return
 }
 
-/* Inject message router into xmpp library */
+func (a AccountManager) OnlineRoster(jid string) (online []string, err error) {
+	a.lock.Lock()
+	defer a.lock.Unlock()
 
-type MessageRouter struct {
-	Users map[string]chan<- interface{}
-	lock  sync.Mutex
-	log   Logger
-	bus   chan xmpp.RoutableMessage
-}
+	a.log.Info(fmt.Sprintf("retrieving roster: %s", jid))
 
-func (router MessageRouter) RegisterClient(jid string, publish chan<- interface{}) error {
-	router.lock.Lock()
-	defer router.lock.Unlock()
-
-	router.log.Info(fmt.Sprintf("register client: %s", jid))
-
-	router.Users[jid] = publish
-	return nil
-}
-
-func (router MessageRouter) OnlineRoster(jid string) (online []string, err error) {
-	router.lock.Lock()
-	defer router.lock.Unlock()
-
-	router.log.Info(fmt.Sprintf("retrieving roster: %s", jid))
-
-	for person := range router.Users {
+	for person := range a.Online {
 		online = append(online, person)
 	}
 	return
 }
 
-func (router MessageRouter) routeRoutine() {
+func (a AccountManager) routeRoutine(bus <-chan xmpp.Message) {
 	var channel chan<- interface{}
 	var ok bool
 
 	for {
-		message := <-router.bus
-		router.lock.Lock()
+		message := <-bus
+		a.lock.Lock()
 
-		if channel, ok = router.Users[message.To]; ok {
+		if channel, ok = a.Online[message.To]; ok {
 			channel <- message.Data
 		}
 
-		router.lock.Unlock()
+		a.lock.Unlock()
+	}
+}
+
+func (a AccountManager) registerRoutine(bus <-chan xmpp.Register) {
+	for {
+		message := <-bus
+		a.lock.Lock()
+		a.Online[message.Jid] = message.Receiver
+		a.lock.Unlock()
 	}
 }
 
@@ -132,10 +123,15 @@ func main() {
 
 	var registered = make(map[string]string)
 	registered["tmurphy"] = "password"
+
 	var active_users = make(map[string]chan<- interface{})
+
 	var l = Logger{info: true, debug: *debugPtr}
-	var am = AccountManager{Registered: registered, log: l}
-	var mr = MessageRouter{Users: active_users, log: l, bus: make(chan xmpp.RoutableMessage)}
+
+	var messagebus = make(chan xmpp.Message)
+	var registerbus = make(chan xmpp.Register)
+
+	var am = AccountManager{Users: registered, Online: active_users, log: l}
 
 	var cert, _ = tls.LoadX509KeyPair("./cert.pem", "./key.pem")
 	var tlsConfig = tls.Config{
@@ -149,12 +145,13 @@ func main() {
 			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA},
 	}
 
-	xmppConfig := &xmpp.Config{
-		Log:       l,
-		Router:    mr,
-		Accounts:  am,
-		Domain:    "example.com",
-		TLSConfig: &tlsConfig,
+	xmppServer := &xmpp.Server{
+		Log:             l,
+		Accounts:        am,
+		MessageBus:      messagebus,
+		RegistrationBus: registerbus,
+		Domain:          "example.com",
+		TLSConfig:       &tlsConfig,
 	}
 
 	l.Info("starting server")
@@ -169,7 +166,10 @@ func main() {
 	}
 	defer listener.Close()
 
-	go mr.routeRoutine()
+	go am.routeRoutine(messagebus)
+	go am.registerRoutine(registerbus)
+
+	// Handle each connection.
 
 	for {
 		conn, err := listener.Accept()
@@ -179,6 +179,6 @@ func main() {
 			os.Exit(1)
 		}
 
-		go xmpp.TcpAnswer(conn, mr.bus, xmppConfig)
+		go xmppServer.TcpAnswer(conn)
 	}
 }
