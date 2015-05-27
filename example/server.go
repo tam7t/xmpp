@@ -105,11 +105,20 @@ func (a AccountManager) routeRoutine(bus <-chan xmpp.Message) {
 	}
 }
 
-func (a AccountManager) registerRoutine(bus <-chan xmpp.Register) {
+func (a AccountManager) connectRoutine(bus <-chan xmpp.Connect) {
 	for {
 		message := <-bus
 		a.lock.Lock()
 		a.Online[message.Jid] = message.Receiver
+		a.lock.Unlock()
+	}
+}
+
+func (a AccountManager) disconnectRoutine(bus <-chan xmpp.Disconnect) {
+	for {
+		message := <-bus
+		a.lock.Lock()
+		delete(a.Online, message.Jid)
 		a.lock.Unlock()
 	}
 }
@@ -129,7 +138,8 @@ func main() {
 	var l = Logger{info: true, debug: *debugPtr}
 
 	var messagebus = make(chan xmpp.Message)
-	var registerbus = make(chan xmpp.Register)
+	var connectbus = make(chan xmpp.Connect)
+	var disconnectbus = make(chan xmpp.Disconnect)
 
 	var am = AccountManager{Users: registered, Online: active_users, log: l}
 
@@ -146,12 +156,13 @@ func main() {
 	}
 
 	xmppServer := &xmpp.Server{
-		Log:             l,
-		Accounts:        am,
-		MessageBus:      messagebus,
-		RegistrationBus: registerbus,
-		Domain:          "example.com",
-		TLSConfig:       &tlsConfig,
+		Log:           l,
+		Accounts:      am,
+		MessageBus:    messagebus,
+		ConnectBus:    connectbus,
+		DisconnectBus: disconnectbus,
+		Domain:        "example.com",
+		TLSConfig:     &tlsConfig,
 	}
 
 	l.Info("starting server")
@@ -167,7 +178,8 @@ func main() {
 	defer listener.Close()
 
 	go am.routeRoutine(messagebus)
-	go am.registerRoutine(registerbus)
+	go am.connectRoutine(connectbus)
+	go am.disconnectRoutine(disconnectbus)
 
 	// Handle each connection.
 

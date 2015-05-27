@@ -61,7 +61,10 @@ type Server struct {
 
 	// How the client notifies the server who the connection is
 	// and how to send messages to the connection JID
-	RegistrationBus chan<- Register
+	ConnectBus chan<- Connect
+
+	// notify server that the client has disconnected
+	DisconnectBus chan<- Disconnect
 
 	// How the client sends messages to other clients
 	MessageBus chan<- Message
@@ -83,9 +86,13 @@ type Message struct {
 }
 
 // Register a channel where the server can send messages to the specific Jid
-type Register struct {
+type Connect struct {
 	Jid      string
 	Receiver chan<- interface{}
+}
+
+type Disconnect struct {
+	Jid string
 }
 
 func (s *Server) TcpAnswer(conn net.Conn) (err error) {
@@ -207,7 +214,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 				// fire off go routine to handle messages
 				messagesToSendClient = make(chan interface{})
 				go handle(c, messagesToSendClient)
-				s.RegistrationBus <- Register{Jid: c.jid, Receiver: messagesToSendClient}
+				s.ConnectBus <- Connect{Jid: c.jid, Receiver: messagesToSendClient}
 
 				c.state = STATE_NORMAL
 			default:
@@ -243,10 +250,12 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 				s.Log.Error(fmt.Sprintf("UNKNOWN STANZA %s\n", val))
 			}
 		case STATE_ERROR:
+			s.Log.Error("Error state")
 			c.state = STATE_CLOSED
 		case STATE_CLOSED:
-			s.Log.Error("error state")
+			s.Log.Info("Done state")
 			close(messagesToSendClient)
+			s.DisconnectBus <- Disconnect{Jid: c.jid}
 			conn.Close()
 			break
 		}
