@@ -34,11 +34,6 @@ func (c *Conn) SendStanza(s interface{}) error {
 type AccountManager interface {
 	Authenticate(username, password string) (success bool, err error)
 	CreateAccount(username, password string) (success bool, err error)
-}
-
-type MessageRouter interface {
-	// register a channel for server to send JID messages
-	RegisterClient(jid string, publish chan<- interface{}) error
 	OnlineRoster(jid string) (online []string, err error)
 }
 
@@ -49,7 +44,7 @@ type Logging interface {
 }
 
 // Config contains options for an XMPP connection.
-type Config struct {
+type Server struct {
 	// what domain to use?
 	Domain string
 
@@ -60,10 +55,20 @@ type Config struct {
 	// handshake. If nil, sensible defaults will be used.
 	TLSConfig *tls.Config
 
-	// Injectable Account Manager
+	// AccountManager handles messages that the server must respond to
+	// such as authentication and roster management
 	Accounts AccountManager
-	// Injectable Message Router
-	Router MessageRouter
+
+	// How the client notifies the server who the connection is
+	// and how to send messages to the connection JID
+	ConnectBus chan<- Connect
+
+	// notify server that the client has disconnected
+	DisconnectBus chan<- Disconnect
+
+	// How the client sends messages to other clients
+	MessageBus chan<- Message
+
 	// Injectable logging interface
 	Log Logging
 }
@@ -74,12 +79,23 @@ func makeInOut(conn io.ReadWriter) (in *xml.Decoder, out io.Writer) {
 	return
 }
 
-type RoutableMessage struct {
+// Represents a generic XMPP message to send to the To Jid
+type Message struct {
 	To   string
 	Data interface{}
 }
 
-func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config) (err error) {
+// Register a channel where the server can send messages to the specific Jid
+type Connect struct {
+	Jid      string
+	Receiver chan<- interface{}
+}
+
+type Disconnect struct {
+	Jid string
+}
+
+func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 	var c = new(Conn)
 	var se xml.StartElement
 	var val interface{}
@@ -87,11 +103,10 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 
 	c.state = STATE_INIT
 
-	log := config.Log
-	log.Info("start")
+	s.Log.Info("Accepting TCP connection")
 
 	c.in, c.out = makeInOut(conn)
-	c.domainpart = config.Domain
+	c.domainpart = s.Domain
 
 	for {
 		switch c.state {
@@ -101,7 +116,7 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 				panic("bad state")
 			}
 			// TODO: check that se is a stream
-			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", c.getCookie())
+			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", createCookie())
 			fmt.Fprintf(c.out, "<stream:features><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'><required/></starttls></stream:features>")
 			c.state = STATE_FIRST_STREAM
 		case STATE_FIRST_STREAM:
@@ -113,7 +128,7 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 			c.state = STATE_TLS_UPGRADE_REQUESTED
 		case STATE_TLS_UPGRADE_REQUESTED:
 			fmt.Fprintf(c.out, "<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
-			tlsConn := tls.Server(conn, config.TLSConfig)
+			tlsConn := tls.Server(conn, s.TLSConfig)
 			tlsConn.Handshake()
 			c.in, c.out = makeInOut(tlsConn)
 			c.state = STATE_TLS_UPGRADED
@@ -123,7 +138,7 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 				panic("bad state")
 			}
 			// TODO: ensure check that se is a stream
-			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", c.getCookie())
+			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", createCookie())
 			fmt.Fprintf(c.out, "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>PLAIN</mechanism></mechanisms></stream:features>")
 			c.state = STATE_TLS_START_STREAM
 		case STATE_TLS_START_STREAM:
@@ -145,10 +160,9 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 				if err != nil {
 					c.state = STATE_ERROR
 				}
-				s := string(data)
-				info := strings.Split(s, "\x00")
+				info := strings.Split(string(data), "\x00")
 				// should check that info[1] starts with client.jid
-				success, err := config.Accounts.Authenticate(info[1], info[2])
+				success, err := s.Accounts.Authenticate(info[1], info[2])
 				if err != nil {
 					panic("bad authentate account callback")
 				}
@@ -168,10 +182,10 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 		case STATE_AUTHED_START:
 			se, err = nextStart(c)
 			if err != nil {
-				log.Error(fmt.Sprintf("%s", err.Error()))
+				s.Log.Error(fmt.Sprintf("%s", err.Error()))
 				panic("bad state--")
 			}
-			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", c.getCookie())
+			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", createCookie())
 			fmt.Fprintf(c.out, "<stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/></stream:features>")
 			c.state = STATE_AUTHED_STREAM
 		case STATE_AUTHED_STREAM:
@@ -183,7 +197,7 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 			// read bind request
 			_, val, err := next(c, se)
 			if err != nil {
-				log.Error(fmt.Sprintf("%s", err.Error()))
+				s.Log.Error(fmt.Sprintf("%s", err.Error()))
 				panic("bad * state")
 			}
 			switch v := val.(type) {
@@ -200,7 +214,7 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 				// fire off go routine to handle messages
 				messagesToSendClient = make(chan interface{})
 				go handle(c, messagesToSendClient)
-				config.Router.RegisterClient(c.jid, messagesToSendClient)
+				s.ConnectBus <- Connect{Jid: c.jid, Receiver: messagesToSendClient}
 
 				c.state = STATE_NORMAL
 			default:
@@ -210,18 +224,18 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 			/* read from socket */
 			se, err = nextStart(c)
 			if err != nil {
-				log.Error(fmt.Sprintf("could not read %s\n", err.Error()))
+				s.Log.Error(fmt.Sprintf("could not read %s\n", err.Error()))
 				panic("bad - state")
 			}
 			_, val, _ = next(c, se)
 			switch v := val.(type) {
 			case *ClientMessage:
-				messageBus <- RoutableMessage{To: v.To, Data: val}
+				s.MessageBus <- Message{To: v.To, Data: val}
 			case *ClientIQ:
 				// handle things we need to handle
 				if string(v.Query) == "<query xmlns='jabber:iq:roster'/>" {
 					// respond with roster
-					roster, _ := config.Router.OnlineRoster(c.jid)
+					roster, _ := s.Accounts.OnlineRoster(c.jid)
 					msg := "<iq id='" + v.Id + "' to='" + v.From + "' type='result'><query xmlns='jabber:iq:roster' ver='ver7'>"
 					for _, v := range roster {
 						msg = msg + "<item jid='" + v + "'/>"
@@ -230,16 +244,18 @@ func TcpAnswer(conn net.Conn, messageBus chan<- RoutableMessage, config *Config)
 
 					messagesToSendClient <- msg
 				} else {
-					messageBus <- RoutableMessage{To: v.To, Data: val}
+					s.MessageBus <- Message{To: v.To, Data: val}
 				}
 			default:
-				log.Error(fmt.Sprintf("UNKNOWN STANZA %s\n", val))
+				s.Log.Error(fmt.Sprintf("UNKNOWN STANZA %s\n", val))
 			}
 		case STATE_ERROR:
+			s.Log.Error("Error state")
 			c.state = STATE_CLOSED
 		case STATE_CLOSED:
-			log.Error("error state")
+			s.Log.Info("Done state")
 			close(messagesToSendClient)
+			s.DisconnectBus <- Disconnect{Jid: c.jid}
 			conn.Close()
 			break
 		}

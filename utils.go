@@ -29,7 +29,7 @@ func domainFromJid(jid string) string {
 // Cookie is used to give a unique identifier to each request.
 type Cookie uint64
 
-func (c *Conn) getCookie() Cookie {
+func createCookie() Cookie {
 	var buf [8]byte
 	if _, err := rand.Reader.Read(buf[:]); err != nil {
 		panic("Failed to read random bytes: " + err.Error())
