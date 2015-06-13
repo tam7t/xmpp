@@ -130,7 +130,10 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 		case STATE_TLS_UPGRADE_REQUESTED:
 			fmt.Fprintf(c.out, "<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
 			tlsConn := tls.Server(conn, s.TLSConfig)
-			tlsConn.Handshake()
+			err = tlsConn.Handshake()
+			if err != nil {
+				s.errorOut(c, err)
+			}
 			c.in, c.out = makeInOut(tlsConn)
 			c.state = STATE_TLS_UPGRADED
 		case STATE_TLS_UPGRADED:
