@@ -111,7 +111,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 	for {
 		switch c.state {
 		case STATE_INIT:
-			se, err = nextStart(c)
+			se, err = scan(c.in)
 			if err != nil {
 				panic("bad state")
 			}
@@ -120,7 +120,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 			fmt.Fprintf(c.out, "<stream:features><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'><required/></starttls></stream:features>")
 			c.state = STATE_FIRST_STREAM
 		case STATE_FIRST_STREAM:
-			se, err = nextStart(c)
+			se, err = scan(c.in)
 			if err != nil {
 				panic("bad state")
 			}
@@ -133,7 +133,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 			c.in, c.out = makeInOut(tlsConn)
 			c.state = STATE_TLS_UPGRADED
 		case STATE_TLS_UPGRADED:
-			se, err = nextStart(c)
+			se, err = scan(c.in)
 			if err != nil {
 				panic("bad state")
 			}
@@ -142,7 +142,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 			fmt.Fprintf(c.out, "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>PLAIN</mechanism></mechanisms></stream:features>")
 			c.state = STATE_TLS_START_STREAM
 		case STATE_TLS_START_STREAM:
-			se, err = nextStart(c)
+			se, err = scan(c.in)
 			if err != nil {
 				panic("bad state")
 			}
@@ -150,7 +150,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 			c.state = STATE_TLS_AUTH
 		case STATE_TLS_AUTH:
 			// read the full auth stanza
-			_, val, err = next(c, se)
+			_, val, err = read(c.in, se)
 			if err != nil {
 				panic("bad state")
 			}
@@ -180,7 +180,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 		case STATE_TLS_REGISTER:
 			panic("registration not implemented")
 		case STATE_AUTHED_START:
-			se, err = nextStart(c)
+			se, err = scan(c.in)
 			if err != nil {
 				s.Log.Error(fmt.Sprintf("%s", err.Error()))
 				panic("bad state--")
@@ -189,13 +189,13 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 			fmt.Fprintf(c.out, "<stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/></stream:features>")
 			c.state = STATE_AUTHED_STREAM
 		case STATE_AUTHED_STREAM:
-			se, err = nextStart(c)
+			se, err = scan(c.in)
 			if err != nil {
 				panic("bad state?")
 			}
 			// check that it's a bind request
 			// read bind request
-			_, val, err := next(c, se)
+			_, val, err := read(c.in, se)
 			if err != nil {
 				s.Log.Error(fmt.Sprintf("%s", err.Error()))
 				panic("bad * state")
@@ -222,12 +222,12 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 			}
 		case STATE_NORMAL:
 			/* read from socket */
-			se, err = nextStart(c)
+			se, err = scan(c.in)
 			if err != nil {
 				s.Log.Error(fmt.Sprintf("could not read %s\n", err.Error()))
 				panic("bad - state")
 			}
-			_, val, _ = next(c, se)
+			_, val, _ = read(c.in, se)
 			switch v := val.(type) {
 			case *ClientMessage:
 				s.MessageBus <- Message{To: v.To, Data: val}

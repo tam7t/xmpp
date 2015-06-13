@@ -151,22 +151,17 @@ type RosterRequestItem struct {
 }
 
 // Scan XML token stream to find next StartElement.
-func nextStart(c *Conn) (elem xml.StartElement, err error) {
-	var p *xml.Decoder
-	p = c.in
+func scan(inputStream *xml.Decoder) (xml.StartElement, error) {
 	for {
-		var t xml.Token
-		t, err = p.Token()
+		nextToken, err := inputStream.Token()
 		if err != nil {
-			return
+			return nextToken.(xml.StartElement), err
 		}
-		switch t := t.(type) {
+		switch nextToken.(type) {
 		case xml.StartElement:
-			elem = t
-			return
+			return nextToken.(xml.StartElement), nil
 		}
 	}
-	panic("unreachable")
 }
 
 // http://www.xmpp.org/extensions/xep-0077.html
@@ -176,25 +171,25 @@ func nextStart(c *Conn) (elem xml.StartElement, err error) {
 // Scan XML token stream for next element and save into val.
 // If val == nil, allocate new element based on proto map.
 // Either way, return val.
-func next(c *Conn, se xml.StartElement) (xml.Name, interface{}, error) {
+func read(inputStream *xml.Decoder, se xml.StartElement) (xml.Name, interface{}, error) {
 	// Put start element in an interface and allocate one.
-	var nv interface{}
-	var err error
-	if t, e := defaultStorage[se.Name]; e {
-		nv = reflect.New(t).Interface()
+	var messageInterface interface{}
+
+	if messageType, present := messageTypes[se.Name]; present {
+		messageInterface = reflect.New(messageType).Interface()
 	} else {
-		return xml.Name{}, nil, errors.New("unexpected XMPP message " +
-			se.Name.Space + " <" + se.Name.Local + "/>")
+		return xml.Name{}, nil, errors.New("unexpected XMPP message " + se.Name.Space + " <" + se.Name.Local + "/>")
 	}
 
 	// Unmarshal into that storage.
-	if err = c.in.DecodeElement(nv, &se); err != nil {
+	if err := inputStream.DecodeElement(messageInterface, &se); err != nil {
 		return xml.Name{}, nil, err
+	} else {
+		return se.Name, messageInterface, err
 	}
-	return se.Name, nv, err
 }
 
-var defaultStorage = map[xml.Name]reflect.Type{
+var messageTypes = map[xml.Name]reflect.Type{
 	xml.Name{Space: NsStream, Local: "error"}:    reflect.TypeOf(StreamError{}),
 	xml.Name{Space: NsTLS, Local: "failure"}:     reflect.TypeOf(tlsFailure{}),
 	xml.Name{Space: NsSASL, Local: "auth"}:       reflect.TypeOf(saslAuth{}),
