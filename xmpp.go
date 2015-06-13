@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -113,7 +114,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 		case STATE_INIT:
 			se, err = scan(c.in)
 			if err != nil {
-				panic("bad state")
+				s.errorOut(c, err)
 			}
 			// TODO: check that se is a stream
 			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", createCookie())
@@ -122,7 +123,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 		case STATE_FIRST_STREAM:
 			se, err = scan(c.in)
 			if err != nil {
-				panic("bad state")
+				s.errorOut(c, err)
 			}
 			// TODO: ensure urn:ietf:params:xml:ns:xmpp-tls
 			c.state = STATE_TLS_UPGRADE_REQUESTED
@@ -135,7 +136,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 		case STATE_TLS_UPGRADED:
 			se, err = scan(c.in)
 			if err != nil {
-				panic("bad state")
+				s.errorOut(c, err)
 			}
 			// TODO: ensure check that se is a stream
 			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", createCookie())
@@ -144,7 +145,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 		case STATE_TLS_START_STREAM:
 			se, err = scan(c.in)
 			if err != nil {
-				panic("bad state")
+				s.errorOut(c, err)
 			}
 			// TODO: check what client sends, auth or register
 			c.state = STATE_TLS_AUTH
@@ -152,19 +153,19 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 			// read the full auth stanza
 			_, val, err = read(c.in, se)
 			if err != nil {
-				panic("bad state")
+				s.errorOut(c, errors.New("Unable to read auth stanza"))
 			}
 			switch v := val.(type) {
 			case *saslAuth:
 				data, err := base64.StdEncoding.DecodeString(v.Body)
 				if err != nil {
-					c.state = STATE_ERROR
+					s.errorOut(c, err)
 				}
 				info := strings.Split(string(data), "\x00")
 				// should check that info[1] starts with client.jid
 				success, err := s.Accounts.Authenticate(info[1], info[2])
 				if err != nil {
-					panic("bad authentate account callback")
+					s.errorOut(c, err)
 				}
 				if success {
 					c.localpart = info[1]
@@ -175,15 +176,12 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 				}
 			default:
 				// expected authentication
-				c.state = STATE_ERROR
+				s.errorOut(c, errors.New("Expected authentication"))
 			}
-		case STATE_TLS_REGISTER:
-			panic("registration not implemented")
 		case STATE_AUTHED_START:
 			se, err = scan(c.in)
 			if err != nil {
-				s.Log.Error(fmt.Sprintf("%s", err.Error()))
-				panic("bad state--")
+				s.errorOut(c, err)
 			}
 			fmt.Fprintf(c.out, "<?xml version='1.0'?><stream:stream id='%x' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>", createCookie())
 			fmt.Fprintf(c.out, "<stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/></stream:features>")
@@ -191,14 +189,13 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 		case STATE_AUTHED_STREAM:
 			se, err = scan(c.in)
 			if err != nil {
-				panic("bad state?")
+				s.errorOut(c, err)
 			}
 			// check that it's a bind request
 			// read bind request
 			_, val, err := read(c.in, se)
 			if err != nil {
-				s.Log.Error(fmt.Sprintf("%s", err.Error()))
-				panic("bad * state")
+				s.errorOut(c, err)
 			}
 			switch v := val.(type) {
 			case *ClientIQ:
@@ -206,26 +203,25 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 				if v.Bind.Resource == "" {
 					c.resourcepart = makeResource()
 				} else {
-					panic("ahhh")
+					s.errorOut(c, errors.New("Invalid bind request"))
 				}
 				c.jid = c.localpart + "@" + c.domainpart + "/" + c.resourcepart
 				fmt.Fprintf(c.out, "<iq id='%s' type='result'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>%s</jid></bind></iq>", v.Id, c.jid)
 
 				// fire off go routine to handle messages
 				messagesToSendClient = make(chan interface{})
-				go handle(c, messagesToSendClient)
+				go s.handle(c, messagesToSendClient)
 				s.ConnectBus <- Connect{Jid: c.jid, Receiver: messagesToSendClient}
 
 				c.state = STATE_NORMAL
 			default:
-				panic("even worse!")
+				s.errorOut(c, errors.New("Expected ClientIQ message"))
 			}
 		case STATE_NORMAL:
 			/* read from socket */
 			se, err = scan(c.in)
 			if err != nil {
-				s.Log.Error(fmt.Sprintf("could not read %s\n", err.Error()))
-				panic("bad - state")
+				s.errorOut(c, err)
 			}
 			_, val, _ = read(c.in, se)
 			switch v := val.(type) {
@@ -247,13 +243,10 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 					s.MessageBus <- Message{To: v.To, Data: val}
 				}
 			default:
-				s.Log.Error(fmt.Sprintf("UNKNOWN STANZA %s\n", val))
+				s.Log.Error(fmt.Sprintf("Ignoring unknown stanza: %s", val))
 			}
-		case STATE_ERROR:
-			s.Log.Error("Error state")
-			c.state = STATE_CLOSED
 		case STATE_CLOSED:
-			s.Log.Info("Done state")
+			s.Log.Debug("Done state")
 			close(messagesToSendClient)
 			s.DisconnectBus <- Disconnect{Jid: c.jid}
 			conn.Close()
@@ -262,7 +255,12 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 	}
 }
 
-func handle(conn *Conn, messagesToSendClient <-chan interface{}) {
+func (s *Server) errorOut(conn *Conn, err error) {
+	s.Log.Error(err.Error())
+	conn.state = STATE_CLOSED
+}
+
+func (s *Server) handle(conn *Conn, messagesToSendClient <-chan interface{}) {
 	var err error
 
 	for {
@@ -276,7 +274,7 @@ func handle(conn *Conn, messagesToSendClient <-chan interface{}) {
 		}
 
 		if err != nil {
-			break
+			s.Log.Error(err.Error())
 		}
 	}
 }
