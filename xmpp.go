@@ -19,13 +19,19 @@ import (
 
 // Conn represents a connection to an XMPP server.
 type Conn struct {
-	out          io.Writer
-	in           *xml.Decoder
+	out    io.Writer
+	in     *xml.Decoder
+	state  int
+	client Client
+}
+
+// Client represents an xmpp connection
+type Client struct {
 	jid          string
 	localpart    string
 	domainpart   string
 	resourcepart string
-	state        int
+	messages     chan<- interface{}
 }
 
 func (c *Conn) SendStanza(s interface{}) error {
@@ -44,6 +50,10 @@ type Logging interface {
 	Error(string) error
 }
 
+type Extension interface {
+	Process(message interface{}, from Client)
+}
+
 // Config contains options for an XMPP connection.
 type Server struct {
 	// what domain to use?
@@ -59,6 +69,9 @@ type Server struct {
 	// AccountManager handles messages that the server must respond to
 	// such as authentication and roster management
 	Accounts AccountManager
+
+	// Extensions are injectable handlers that process messages
+	Extensions []Extension
 
 	// How the client notifies the server who the connection is
 	// and how to send messages to the connection JID
@@ -107,7 +120,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 	s.Log.Info("Accepting TCP connection")
 
 	c.in, c.out = makeInOut(conn)
-	c.domainpart = s.Domain
+	c.client.domainpart = s.Domain
 
 	for {
 		switch c.state {
@@ -171,7 +184,7 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 					s.errorOut(c, err)
 				}
 				if success {
-					c.localpart = info[1]
+					c.client.localpart = info[1]
 					fmt.Fprintf(c.out, "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>")
 					c.state = STATE_AUTHED_START
 				} else {
@@ -204,17 +217,18 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 			case *ClientIQ:
 				// TODO: actually validate that it's a bind request
 				if v.Bind.Resource == "" {
-					c.resourcepart = makeResource()
+					c.client.resourcepart = makeResource()
 				} else {
 					s.errorOut(c, errors.New("Invalid bind request"))
 				}
-				c.jid = c.localpart + "@" + c.domainpart + "/" + c.resourcepart
-				fmt.Fprintf(c.out, "<iq id='%s' type='result'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>%s</jid></bind></iq>", v.Id, c.jid)
+				c.client.jid = c.client.localpart + "@" + c.client.domainpart + "/" + c.client.resourcepart
+				fmt.Fprintf(c.out, "<iq id='%s' type='result'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>%s</jid></bind></iq>", v.Id, c.client.jid)
 
 				// fire off go routine to handle messages
 				messagesToSendClient = make(chan interface{})
+				c.client.messages = messagesToSendClient
 				go s.handle(c, messagesToSendClient)
-				s.ConnectBus <- Connect{Jid: c.jid, Receiver: messagesToSendClient}
+				s.ConnectBus <- Connect{Jid: c.client.jid, Receiver: messagesToSendClient}
 
 				c.state = STATE_NORMAL
 			default:
@@ -227,31 +241,14 @@ func (s *Server) TcpAnswer(conn net.Conn) (err error) {
 				s.errorOut(c, err)
 			}
 			_, val, _ = read(c.in, se)
-			switch v := val.(type) {
-			case *ClientMessage:
-				s.MessageBus <- Message{To: v.To, Data: val}
-			case *ClientIQ:
-				// handle things we need to handle
-				if string(v.Query) == "<query xmlns='jabber:iq:roster'/>" {
-					// respond with roster
-					roster, _ := s.Accounts.OnlineRoster(c.jid)
-					msg := "<iq id='" + v.Id + "' to='" + v.From + "' type='result'><query xmlns='jabber:iq:roster' ver='ver7'>"
-					for _, v := range roster {
-						msg = msg + "<item jid='" + v + "'/>"
-					}
-					msg = msg + "</query></iq>"
 
-					messagesToSendClient <- msg
-				} else {
-					s.MessageBus <- Message{To: v.To, Data: val}
-				}
-			default:
-				s.Log.Error(fmt.Sprintf("Ignoring unknown stanza: %s", val))
+			for _, extension := range s.Extensions {
+				extension.Process(val, c.client)
 			}
 		case STATE_CLOSED:
 			s.Log.Debug("Done state")
 			close(messagesToSendClient)
-			s.DisconnectBus <- Disconnect{Jid: c.jid}
+			s.DisconnectBus <- Disconnect{Jid: c.client.jid}
 			conn.Close()
 			break
 		}
@@ -267,7 +264,10 @@ func (s *Server) handle(conn *Conn, messagesToSendClient <-chan interface{}) {
 	var err error
 
 	for {
-		message := <-messagesToSendClient
+		message, open := <-messagesToSendClient
+		if !open {
+			break
+		}
 
 		str, ok := message.(string)
 		if ok {
