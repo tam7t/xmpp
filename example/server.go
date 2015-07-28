@@ -156,10 +156,15 @@ func main() {
 	}
 
 	xmppServer := &xmpp.Server{
-		Log:           l,
-		Accounts:      am,
-		MessageBus:    messagebus,
-		ConnectBus:    connectbus,
+		Log:        l,
+		Accounts:   am,
+		MessageBus: messagebus,
+		ConnectBus: connectbus,
+		Extensions: []xmpp.Extension{
+			&xmpp.DebugExtension{Log: l},
+			&xmpp.NormalMessageExtension{MessageBus: messagebus},
+			&xmpp.PresenceExtension{MessageBus: messagebus, Accounts: am},
+		},
 		DisconnectBus: disconnectbus,
 		Domain:        "example.com",
 		TLSConfig:     &tlsConfig,
@@ -172,7 +177,7 @@ func main() {
 
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", *portPtr))
 	if err != nil {
-		l.Error(fmt.Sprintf("could not listen for connections: ", err.Error()))
+		l.Error(fmt.Sprintf("could not listen for connections: %s", err.Error()))
 		os.Exit(1)
 	}
 	defer listener.Close()
@@ -187,7 +192,7 @@ func main() {
 		conn, err := listener.Accept()
 
 		if err != nil {
-			l.Error(fmt.Sprintf("could not accept connection: ", err.Error()))
+			l.Error(fmt.Sprintf("could not accept connection: %s", err.Error()))
 			os.Exit(1)
 		}
 
