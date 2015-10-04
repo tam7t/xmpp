@@ -2,6 +2,11 @@ package xmpp
 
 import "fmt"
 
+// Extension interface for processing normal messages
+type Extension interface {
+	Process(message interface{}, from Client)
+}
+
 // DebugExtension just dumps data
 type DebugExtension struct {
 	Log Logging
@@ -39,7 +44,7 @@ func (e *PresenceExtension) Process(message interface{}, from Client) {
 	if ok && string(parsed.Query) == "<query xmlns='jabber:iq:roster'/>" {
 		// respond with roster
 		roster, _ := e.Accounts.OnlineRoster(from.jid)
-		msg := "<iq id='" + parsed.Id + "' to='" + parsed.From + "' type='result'><query xmlns='jabber:iq:roster' ver='ver7'>"
+		msg := "<iq id='" + parsed.ID + "' to='" + parsed.From + "' type='result'><query xmlns='jabber:iq:roster' ver='ver7'>"
 		for _, v := range roster {
 			msg = msg + "<item jid='" + v + "'/>"
 		}
