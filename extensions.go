@@ -4,7 +4,7 @@ import "fmt"
 
 // Extension interface for processing normal messages
 type Extension interface {
-	Process(message interface{}, from Client)
+	Process(message interface{}, from *Client)
 }
 
 // DebugExtension just dumps data
@@ -13,7 +13,7 @@ type DebugExtension struct {
 }
 
 // Process a message (write to debug logger)
-func (e *DebugExtension) Process(message interface{}, from Client) {
+func (e *DebugExtension) Process(message interface{}, from *Client) {
 	e.Log.Debug(fmt.Sprintf("Processing message: %s", message))
 }
 
@@ -23,7 +23,7 @@ type NormalMessageExtension struct {
 }
 
 // Process sends `ClientMessage`s from a client down the `MessageBus`
-func (e *NormalMessageExtension) Process(message interface{}, from Client) {
+func (e *NormalMessageExtension) Process(message interface{}, from *Client) {
 	parsed, ok := message.(*ClientMessage)
 	if ok {
 		e.MessageBus <- Message{To: parsed.To, Data: message}
@@ -37,7 +37,7 @@ type PresenceExtension struct {
 }
 
 // Process responds to Presence requests from a client
-func (e *PresenceExtension) Process(message interface{}, from Client) {
+func (e *PresenceExtension) Process(message interface{}, from *Client) {
 	parsed, ok := message.(*ClientIQ)
 
 	// handle things we need to handle

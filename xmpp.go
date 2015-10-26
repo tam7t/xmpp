@@ -43,7 +43,7 @@ type Logging interface {
 	Error(string) error
 }
 
-// Config contains options for an XMPP connection.
+// Server contains options for an XMPP connection.
 type Server struct {
 	// what domain to use?
 	Domain string
@@ -93,10 +93,24 @@ type Disconnect struct {
 	Jid string
 }
 
-func (s *Server) TcpAnswer(conn net.Conn) (err error) {
-	var c = new(Conn)
-	s.Log.Info("Accepting TCP connection")
+// TCPAnswer sends connection through the TSLStateMachine
+func (s *Server) TCPAnswer(conn net.Conn) {
+	defer conn.Close()
+	var err error
 
-	c.in, c.out = makeInOut(conn)
-	c.client.domainpart = s.Domain
+	s.Log.Info("Accepting TCP connection")
+	state := NewTLSStateMachine()
+	client := &Client{}
+	clientConnection := NewConn(conn, MessageTypes)
+	for {
+		state, err = state.Process(clientConnection, client, s)
+		if err != nil {
+			s.Log.Error(err.Error())
+			return
+		}
+		if state == nil {
+			s.Log.Info(`client disconnected`)
+			return
+		}
+	}
 }

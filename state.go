@@ -9,7 +9,7 @@ import (
 
 // State processes the stream and moves to the next state
 type State interface {
-	Process(c *Connection, s *Server) (State, error)
+	Process(c *Connection, client *Client, s *Server) (State, error)
 }
 
 // NewTLSStateMachine return steps through TCP TLS state
@@ -31,8 +31,8 @@ type Start struct {
 }
 
 // Process message
-func (state *Start) Process(c *Connection, s *Server) (State, error) {
-	se, err := c.Next()
+func (state *Start) Process(c *Connection, client *Client, s *Server) (State, error) {
+	_, err := c.Next()
 	if err != nil {
 		return nil, err
 	}
@@ -48,8 +48,8 @@ type TLSUpgradeRequest struct {
 }
 
 // Process message
-func (state *TLSUpgradeRequest) Process(c *Connection, s *Server) (State, error) {
-	se, err := c.Next()
+func (state *TLSUpgradeRequest) Process(c *Connection, client *Client, s *Server) (State, error) {
+	_, err := c.Next()
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ type TLSUpgrade struct {
 }
 
 // Process message
-func (state *TLSUpgrade) Process(c *Connection, s *Server) (State, error) {
+func (state *TLSUpgrade) Process(c *Connection, client *Client, s *Server) (State, error) {
 	c.SendRaw("<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
 	// close the goroutines to free up the Raw socket
 	c.Close()
@@ -74,7 +74,7 @@ func (state *TLSUpgrade) Process(c *Connection, s *Server) (State, error) {
 		return nil, err
 	}
 	// restart the Connection
-	c = NewConn(tlsConn, c.State, c.Client, c.MessageTypes)
+	c = NewConn(tlsConn, c.MessageTypes)
 	return state.Next, nil
 }
 
@@ -84,8 +84,8 @@ type TLSStartStream struct {
 }
 
 // Process messages
-func (state *TLSStartStream) Process(c *Connection, s *Server) (State, error) {
-	se, err := c.Next()
+func (state *TLSStartStream) Process(c *Connection, client *Client, s *Server) (State, error) {
+	_, err := c.Next()
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ type TLSAuth struct {
 }
 
 // Process messages
-func (state *TLSAuth) Process(c *Connection, s *Server) (State, error) {
+func (state *TLSAuth) Process(c *Connection, client *Client, s *Server) (State, error) {
 	se, err := c.Next()
 	if err != nil {
 		return nil, err
@@ -127,7 +127,7 @@ func (state *TLSAuth) Process(c *Connection, s *Server) (State, error) {
 			return nil, err
 		}
 		if success {
-			c.Client.localpart = info[1]
+			client.localpart = info[1]
 			c.SendRaw("<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>")
 		} else {
 			c.SendRaw("<failure xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><not-authorized/></failure>")
@@ -146,8 +146,8 @@ type AuthedStart struct {
 }
 
 // Process messages
-func (state *AuthedStart) Process(c *Connection, s *Server) (State, error) {
-	se, err := c.Next()
+func (state *AuthedStart) Process(c *Connection, client *Client, s *Server) (State, error) {
+	_, err := c.Next()
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +162,7 @@ type AuthedStream struct {
 }
 
 // Process messages
-func (state *AuthedStream) Process(c *Connection, s *Server) (State, error) {
+func (state *AuthedStream) Process(c *Connection, client *Client, s *Server) (State, error) {
 	se, err := c.Next()
 	if err != nil {
 		return nil, err
@@ -177,17 +177,17 @@ func (state *AuthedStream) Process(c *Connection, s *Server) (State, error) {
 	case *ClientIQ:
 		// TODO: actually validate that it's a bind request
 		if v.Bind.Resource == "" {
-			c.Client.resourcepart = makeResource()
+			client.resourcepart = makeResource()
 		} else {
 			s.Log.Error(errors.New("Invalid bind request").Error())
 			return nil, err
 		}
-		c.Client.jid = c.Client.localpart + "@" + c.Client.domainpart + "/" + c.Client.resourcepart
-		c.SendRawf("<iq id='%s' type='result'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>%s</jid></bind></iq>", v.ID, c.Client.jid)
+		client.jid = client.localpart + "@" + client.domainpart + "/" + client.resourcepart
+		c.SendRawf("<iq id='%s' type='result'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>%s</jid></bind></iq>", v.ID, client.jid)
 
 		// fire off go routine to handle messages
-		c.Client.messages = make(chan interface{})
-		s.ConnectBus <- Connect{Jid: c.Client.jid, Receiver: c.Client.messages}
+		client.messages = make(chan interface{})
+		s.ConnectBus <- Connect{Jid: client.jid, Receiver: client.messages}
 	default:
 		s.Log.Error(errors.New("Expected ClientIQ message").Error())
 		return nil, err
@@ -199,7 +199,7 @@ func (state *AuthedStream) Process(c *Connection, s *Server) (State, error) {
 type Normal struct{}
 
 // Process messages
-func (state *Normal) Process(c *Connection, s *Server) (State, error) {
+func (state *Normal) Process(c *Connection, client *Client, s *Server) (State, error) {
 	/* read from socket */
 	se, err := c.Next()
 	if err != nil {
@@ -208,7 +208,7 @@ func (state *Normal) Process(c *Connection, s *Server) (State, error) {
 	_, val, _ := c.Read(se)
 
 	for _, extension := range s.Extensions {
-		extension.Process(val, c.Client)
+		extension.Process(val, client)
 	}
 	return state, nil
 }
@@ -217,9 +217,9 @@ func (state *Normal) Process(c *Connection, s *Server) (State, error) {
 type Closed struct{}
 
 // Process messages
-func (state *Closed) Process(c *Connection, s *Server) (State, error) {
-	close(c.Client.messages)
-	s.DisconnectBus <- Disconnect{Jid: c.Client.jid}
+func (state *Closed) Process(c *Connection, client *Client, s *Server) (State, error) {
+	close(client.messages)
+	s.DisconnectBus <- Disconnect{Jid: client.jid}
 
 	c.Raw.Close()
 

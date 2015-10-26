@@ -196,6 +196,6 @@ func main() {
 			os.Exit(1)
 		}
 
-		go xmppServer.TcpAnswer(conn)
+		go xmppServer.TCPAnswer(conn)
 	}
 }

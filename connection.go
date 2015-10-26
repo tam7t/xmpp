@@ -11,8 +11,6 @@ import (
 // Connection represents a connection to an XMPP server.
 type Connection struct {
 	Raw          net.Conn
-	State        State
-	Client       Client
 	MessageTypes map[xml.Name]reflect.Type
 	out          *xml.Encoder
 	in           *xml.Decoder
@@ -50,16 +48,13 @@ type writeOp struct {
 	resp    chan error
 }
 
-// NewConn creates a Connection struct for a given client, statemachine, and
-// message system.
-func NewConn(raw net.Conn, state State, client Client, MessageTypes map[xml.Name]reflect.Type) *Connection {
+// NewConn creates a Connection struct for a given net.Conn and message system
+func NewConn(raw net.Conn, MessageTypes map[xml.Name]reflect.Type) *Connection {
 	conn := &Connection{
 		Raw:            raw,
-		State:          state,
-		Client:         client,
+		MessageTypes:   MessageTypes,
 		in:             xml.NewDecoder(raw),
 		out:            xml.NewEncoder(raw),
-		MessageTypes:   MessageTypes,
 		readStartOps:   make(chan readStartOp),
 		readElementOps: make(chan readElementOp),
 		writeOps:       make(chan writeOp),
@@ -88,7 +83,6 @@ func (c *Connection) readStart() readStartResponse {
 func (c *Connection) readElement(se xml.StartElement) readElementResponse {
 	// Put start element in an interface and allocate one.
 	var messageInterface interface{}
-	var err error
 
 	if messageType, present := c.MessageTypes[se.Name]; present {
 		messageInterface = reflect.New(messageType).Interface()
@@ -116,7 +110,6 @@ func (c *Connection) write(message string) error {
 
 // start goroutine processes messages in thread safe manner
 func (c *Connection) start() {
-	var err error
 
 loop:
 	for {
@@ -141,9 +134,6 @@ loop:
 			op.resp <- c.write(op.message)
 		}
 	}
-
-	// all channels are closing, should be safe to close the socket
-	c.Raw.Close()
 }
 
 // Close shutsdown connections nicely
@@ -170,6 +160,9 @@ func (c *Connection) Next() (xml.StartElement, error) {
 	nextRequest := readStartOp{resp: make(chan readStartResponse)}
 	c.readStartOps <- nextRequest
 	nextResponse, closed := <-nextRequest.resp
+	if closed {
+		fmt.Println(`Connection closed`)
+	}
 	return nextResponse.element, nextResponse.err
 }
 
@@ -178,6 +171,9 @@ func (c *Connection) Read(se xml.StartElement) (xml.Name, interface{}, error) {
 	readRequest := readElementOp{resp: make(chan readElementResponse)}
 	c.readElementOps <- readRequest
 	readResponse, closed := <-readRequest.resp
+	if closed {
+		fmt.Println(`Connection closed`)
+	}
 	return readResponse.name, readResponse.data, readResponse.err
 }
 
@@ -191,6 +187,9 @@ func (c *Connection) SendStanza(s interface{}) error {
 	writeRequest := writeOp{message: message, resp: make(chan error)}
 	c.writeOps <- writeRequest
 	err, closed := <-writeRequest.resp
+	if closed {
+		fmt.Println(`Connection closed`)
+	}
 	return err
 }
 
@@ -199,6 +198,9 @@ func (c *Connection) SendRaw(s string) error {
 	writeRequest := writeOp{message: s, resp: make(chan error)}
 	c.writeOps <- writeRequest
 	err, closed := <-writeRequest.resp
+	if closed {
+		fmt.Println(`Connection closed`)
+	}
 	return err
 }
 
@@ -208,5 +210,8 @@ func (c *Connection) SendRawf(format string, a ...interface{}) error {
 	writeRequest := writeOp{message: message, resp: make(chan error)}
 	c.writeOps <- writeRequest
 	err, closed := <-writeRequest.resp
+	if closed {
+		fmt.Println(`Connection closed`)
+	}
 	return err
 }
