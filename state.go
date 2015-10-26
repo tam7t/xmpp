@@ -183,7 +183,6 @@ func (state *AuthedStream) Process(c *Connection, s *Server) (State, error) {
 
 		// fire off go routine to handle messages
 		c.Client.messages = make(chan interface{})
-		go c.ProcessClientMessages()
 		s.ConnectBus <- Connect{Jid: c.Client.jid, Receiver: c.Client.messages}
 	default:
 		s.Log.Error(errors.New("Expected ClientIQ message").Error())

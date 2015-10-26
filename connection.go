@@ -16,61 +16,76 @@ type Connection struct {
 	MessageTypes map[xml.Name]reflect.Type
 	out          *xml.Encoder
 	in           *xml.Decoder
+	// commands to control concurrent access to Raw connection
+	readStartOps   chan readStartOp
+	readElementOps chan readElementOp
+	writeOps       chan writeOp
+}
+
+type readStartResponse struct {
+	element xml.StartElement
+	err     error
+}
+
+// readStartOp is the command to find the next xml start element
+type readStartOp struct {
+	resp chan readStartResponse
+}
+
+type readElementResponse struct {
+	name xml.Name
+	data interface{}
+	err  error
+}
+
+// readElementOp is the command to read the next xml StartElement
+type readElementOp struct {
+	se   xml.StartElement
+	resp chan readElementResponse
+}
+
+// writeOp is the command to write xml to the connection
+type writeOp struct {
+	message string
+	resp    chan error
 }
 
 // NewConn creates a Connection struct for a given client, statemachine, and
 // message system.
 func NewConn(raw net.Conn, state State, client Client, MessageTypes map[xml.Name]reflect.Type) *Connection {
-	return &Connection{
-		Raw:          raw,
-		State:        state,
-		Client:       client,
-		in:           xml.NewDecoder(raw),
-		out:          xml.NewEncoder(raw),
-		MessageTypes: MessageTypes,
+	conn := &Connection{
+		Raw:            raw,
+		State:          state,
+		Client:         client,
+		in:             xml.NewDecoder(raw),
+		out:            xml.NewEncoder(raw),
+		MessageTypes:   MessageTypes,
+		readStartOps:   make(chan readStartOp),
+		readElementOps: make(chan readElementOp),
+		writeOps:       make(chan writeOp),
 	}
+	go conn.start()
+	return conn
 }
 
-// ProcessClientMessages waits for messages that need to be sent to the client
-// and sends them
-func (c *Connection) ProcessClientMessages() {
-	var err error
-
-	for {
-		message, open := <-c.Client.messages
-		if !open {
-			break
-		}
-
-		str, ok := message.(string)
-		if ok {
-			err = c.SendRaw(str)
-		} else {
-			err = c.SendStanza(message)
-		}
-		// Pass errors up a context
-		// if err != nil {
-		// 	s.Log.Error(err.Error())
-		// }
-	}
-}
-
-// Next scans the stream to find the next xml.StartElement
-func (c *Connection) Next() (xml.StartElement, error) {
+// readStart scans the stream to find the next xml.StartElement
+func (c *Connection) readStart() readStartResponse {
+	// loop until a start element token is found
 	for {
 		nextToken, err := c.in.Token()
 		if err != nil {
-			return nextToken.(xml.StartElement), err
+			return readStartResponse{xml.StartElement{}, err}
 		}
 		switch nextToken.(type) {
 		case xml.StartElement:
-			return nextToken.(xml.StartElement), nil
+			return readStartResponse{nextToken.(xml.StartElement), nil}
 		}
 	}
 }
 
-// Read the Element from the stream and reflect interface to known message types
-func (c *Connection) Read(se xml.StartElement) (xml.Name, interface{}, error) {
+// readElement reads an element from the stream and reflects the interface of
+// the any known message types
+func (c *Connection) readElement(se xml.StartElement) readElementResponse {
 	// Put start element in an interface and allocate one.
 	var messageInterface interface{}
 	var err error
@@ -78,29 +93,99 @@ func (c *Connection) Read(se xml.StartElement) (xml.Name, interface{}, error) {
 	if messageType, present := c.MessageTypes[se.Name]; present {
 		messageInterface = reflect.New(messageType).Interface()
 	} else {
-		return xml.Name{}, nil, errors.New("Unknown XMPP message " + se.Name.Space + " <" + se.Name.Local + "/>")
+		return readElementResponse{
+			xml.Name{},
+			nil,
+			errors.New("Unknown XMPP message " + se.Name.Space + " <" + se.Name.Local + "/>"),
+		}
 	}
 
 	// Unmarshal into that storage.
 	if err := c.in.DecodeElement(messageInterface, &se); err != nil {
-		return xml.Name{}, nil, err
+		return readElementResponse{xml.Name{}, nil, err}
 	}
-	return se.Name, messageInterface, err
+
+	return readElementResponse{se.Name, messageInterface, nil}
+}
+
+// write sends the string across the connection
+func (c *Connection) write(message string) error {
+	_, err := c.Raw.Write([]byte(message))
+	return err
+}
+
+// start goroutine processes messages in thread safe manner
+func (c *Connection) start() {
+	var err error
+
+	for {
+		select {
+		case op, open := <-c.readStartOps:
+			// process operation to find a start element
+			if !open {
+				break
+			}
+			op.resp <- c.readStart()
+		case op, open := <-c.readElementOps:
+			// process operation to read a start element
+			if !open {
+				break
+			}
+			op.resp <- c.readElement(op.se)
+		case op, open := <-c.writeOps:
+			// process operation to write a string
+			if !open {
+				break
+			}
+			op.resp <- c.write(op.message)
+		}
+	}
+	// close channels, close the response's channel
+	// c.Raw.Close()
+}
+
+// Next scans the stream to find the next xml.StartElement
+func (c *Connection) Next() (xml.StartElement, error) {
+	nextRequest := readStartOp{resp: make(chan readStartResponse)}
+	c.readStartOps <- nextRequest
+	nextResponse, closed := <-nextRequest.resp
+	return nextResponse.element, nextResponse.err
+}
+
+// Read the Element from the stream and reflect interface to known message types
+func (c *Connection) Read(se xml.StartElement) (xml.Name, interface{}, error) {
+	readRequest := readElementOp{resp: make(chan readElementResponse)}
+	c.readElementOps <- readRequest
+	readResponse, closed := <-readRequest.resp
+	return readResponse.name, readResponse.data, readResponse.err
 }
 
 // SendStanza XML encodes the interface and sends it across the connection
 func (c *Connection) SendStanza(s interface{}) error {
-	return c.out.Encode(s)
+	data, err := xml.Marshal(s)
+	if err != nil {
+		return err
+	}
+	message := string(data)
+	writeRequest := writeOp{message: message, resp: make(chan error)}
+	c.writeOps <- writeRequest
+	err, closed := <-writeRequest.resp
+	return err
 }
 
 // SendRaw sends the string across the connection
 func (c *Connection) SendRaw(s string) error {
-	_, err := fmt.Fprintf(c.Raw, s)
+	writeRequest := writeOp{message: s, resp: make(chan error)}
+	c.writeOps <- writeRequest
+	err, closed := <-writeRequest.resp
 	return err
 }
 
 // SendRawf formats and sends a string across the connection
 func (c *Connection) SendRawf(format string, a ...interface{}) error {
-	_, err := fmt.Fprintf(c.Raw, format, a...)
+	message := fmt.Sprintf(format, a...)
+	writeRequest := writeOp{message: message, resp: make(chan error)}
+	c.writeOps <- writeRequest
+	err, closed := <-writeRequest.resp
 	return err
 }
