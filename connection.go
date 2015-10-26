@@ -118,30 +118,51 @@ func (c *Connection) write(message string) error {
 func (c *Connection) start() {
 	var err error
 
+loop:
 	for {
 		select {
 		case op, open := <-c.readStartOps:
 			// process operation to find a start element
 			if !open {
-				break
+				break loop
 			}
 			op.resp <- c.readStart()
 		case op, open := <-c.readElementOps:
 			// process operation to read a start element
 			if !open {
-				break
+				break loop
 			}
 			op.resp <- c.readElement(op.se)
 		case op, open := <-c.writeOps:
 			// process operation to write a string
 			if !open {
-				break
+				break loop
 			}
 			op.resp <- c.write(op.message)
 		}
 	}
-	// close channels, close the response's channel
-	// c.Raw.Close()
+
+	// all channels are closing, should be safe to close the socket
+	c.Raw.Close()
+}
+
+// Close shutsdown connections nicely
+func (c *Connection) Close() {
+	// close communiation channels
+	close(c.readStartOps)
+	close(c.readElementOps)
+	close(c.writeOps)
+
+	// flush channels
+	for op := range c.readStartOps {
+		close(op.resp)
+	}
+	for op := range c.readElementOps {
+		close(op.resp)
+	}
+	for op := range c.writeOps {
+		close(op.resp)
+	}
 }
 
 // Next scans the stream to find the next xml.StartElement

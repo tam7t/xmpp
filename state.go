@@ -65,11 +65,15 @@ type TLSUpgrade struct {
 // Process message
 func (state *TLSUpgrade) Process(c *Connection, s *Server) (State, error) {
 	c.SendRaw("<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
+	// close the goroutines to free up the Raw socket
+	c.Close()
+	// perform the TLS handshake
 	tlsConn := tls.Server(c.Raw, s.TLSConfig)
 	err := tlsConn.Handshake()
 	if err != nil {
 		return nil, err
 	}
+	// restart the Connection
 	c = NewConn(tlsConn, c.State, c.Client, c.MessageTypes)
 	return state.Next, nil
 }
