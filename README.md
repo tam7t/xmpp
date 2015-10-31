@@ -18,7 +18,13 @@ following [specifications](http://xmpp.org/xmpp-protocols/xmpp-extensions/):
 ## Usage
 
 ```bash
-$ ./server -debug -port=8081
+$ go build example/server.go
+$ ./server -help
+Usage of ./server:
+  -debug
+    	turn on debug logging
+  -port int
+    	port number to listen on (default 5222)
 ```
 
 ## Creating a self signed certificate
