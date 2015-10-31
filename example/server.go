@@ -42,11 +42,12 @@ func (l Logger) Error(msg string) (err error) {
 type AccountManager struct {
 	Users  map[string]string
 	Online map[string]chan<- interface{}
-	lock   sync.Mutex
+	lock   *sync.Mutex
 	log    Logger
 }
 
 func (a AccountManager) Authenticate(username, password string) (success bool, err error) {
+	a.log.Info("start authenticate")
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
@@ -126,14 +127,14 @@ func (a AccountManager) disconnectRoutine(bus <-chan xmpp.Disconnect) {
 /* Main server loop */
 
 func main() {
-	portPtr := flag.Int("port", 8080, "port number to listen on")
+	portPtr := flag.Int("port", 5222, "port number to listen on")
 	debugPtr := flag.Bool("debug", false, "turn on debug logging")
 	flag.Parse()
 
 	var registered = make(map[string]string)
 	registered["tmurphy"] = "password"
 
-	var active_users = make(map[string]chan<- interface{})
+	var activeUsers = make(map[string]chan<- interface{})
 
 	var l = Logger{info: true, debug: *debugPtr}
 
@@ -141,7 +142,7 @@ func main() {
 	var connectbus = make(chan xmpp.Connect)
 	var disconnectbus = make(chan xmpp.Disconnect)
 
-	var am = AccountManager{Users: registered, Online: active_users, log: l}
+	var am = AccountManager{Users: registered, Online: activeUsers, log: l, lock: &sync.Mutex{}}
 
 	var cert, _ = tls.LoadX509KeyPair("./cert.pem", "./key.pem")
 	var tlsConfig = tls.Config{
@@ -170,14 +171,14 @@ func main() {
 		TLSConfig:     &tlsConfig,
 	}
 
-	l.Info("starting server")
-	l.Info("listening on localhost:" + fmt.Sprintf("%d", *portPtr))
+	l.Info("Starting server")
+	l.Info("Listening on localhost:" + fmt.Sprintf("%d", *portPtr))
 
 	// Listen for incoming connections.
 
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", *portPtr))
 	if err != nil {
-		l.Error(fmt.Sprintf("could not listen for connections: %s", err.Error()))
+		l.Error(fmt.Sprintf("Could not listen for connections: %s", err.Error()))
 		os.Exit(1)
 	}
 	defer listener.Close()
@@ -187,12 +188,11 @@ func main() {
 	go am.disconnectRoutine(disconnectbus)
 
 	// Handle each connection.
-
 	for {
 		conn, err := listener.Accept()
 
 		if err != nil {
-			l.Error(fmt.Sprintf("could not accept connection: %s", err.Error()))
+			l.Error(fmt.Sprintf("Could not accept connection: %s", err.Error()))
 			os.Exit(1)
 		}
 
