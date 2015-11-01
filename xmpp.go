@@ -103,13 +103,11 @@ func (s *Server) TCPAnswer(conn net.Conn) {
 		s.Log.Debug(fmt.Sprintf("[state] %s", state))
 
 		if err != nil {
-			s.Log.Error(err.Error())
-
+			s.Log.Error(fmt.Sprintf("[%s] State Error: %s", client.jid, err.Error()))
 			return
 		}
 		if state == nil {
 			s.Log.Info(fmt.Sprintf("Client Disconnected: %s", client.jid))
-
 			s.DisconnectBus <- Disconnect{Jid: client.jid}
 			return
 		}

@@ -110,6 +110,7 @@ func (a AccountManager) connectRoutine(bus <-chan xmpp.Connect) {
 	for {
 		message := <-bus
 		a.lock.Lock()
+		a.log.Info(fmt.Sprintf("[am] %s connected", message.Jid))
 		a.Online[message.Jid] = message.Receiver
 		a.lock.Unlock()
 	}
@@ -119,6 +120,7 @@ func (a AccountManager) disconnectRoutine(bus <-chan xmpp.Disconnect) {
 	for {
 		message := <-bus
 		a.lock.Lock()
+		a.log.Info(fmt.Sprintf("[am] %s disconnected", message.Jid))
 		delete(a.Online, message.Jid)
 		a.lock.Unlock()
 	}

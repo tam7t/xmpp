@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -231,6 +232,8 @@ func (state *Normal) Process(c *Connection, client *Client, s *Server) (State, *
 			}
 		case <-readDone:
 			return nil, c, nil
+		case err := <-errors:
+			s.Log.Error(fmt.Sprintf("Connection Error: %s", err.Error()))
 		}
 	}
 }
