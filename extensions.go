@@ -30,14 +30,13 @@ func (e *NormalMessageExtension) Process(message interface{}, from *Client) {
 	}
 }
 
-// PresenceExtension handles ClientIQ presence requests and updates
-type PresenceExtension struct {
-	MessageBus chan<- Message
-	Accounts   AccountManager
+// RosterExtension handles ClientIQ presence requests and updates
+type RosterExtension struct {
+	Accounts AccountManager
 }
 
 // Process responds to Presence requests from a client
-func (e *PresenceExtension) Process(message interface{}, from *Client) {
+func (e *RosterExtension) Process(message interface{}, from *Client) {
 	parsed, ok := message.(*ClientIQ)
 
 	// handle things we need to handle

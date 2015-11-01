@@ -166,7 +166,7 @@ func main() {
 		Extensions: []xmpp.Extension{
 			&xmpp.DebugExtension{Log: l},
 			&xmpp.NormalMessageExtension{MessageBus: messagebus},
-			&xmpp.PresenceExtension{MessageBus: messagebus, Accounts: am},
+			&xmpp.RosterExtension{Accounts: am},
 		},
 		DisconnectBus: disconnectbus,
 		Domain:        "example.com",
