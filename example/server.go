@@ -90,6 +90,20 @@ func (a AccountManager) OnlineRoster(jid string) (online []string, err error) {
 	return
 }
 
+// new WIP func for pressence messages
+func (a AccountManager) presenceRoutine(bus <-chan xmpp.Message) {
+	for {
+		message := <-bus
+		a.lock.Lock()
+
+		for _, userChannel := range a.Online {
+			userChannel <- message.Data
+		}
+
+		a.lock.Unlock()
+	}
+}
+
 func (a AccountManager) routeRoutine(bus <-chan xmpp.Message) {
 	var channel chan<- interface{}
 	var ok bool
@@ -141,6 +155,7 @@ func main() {
 	var l = Logger{info: true, debug: *debugPtr}
 
 	var messagebus = make(chan xmpp.Message)
+	var presencebus = make(chan xmpp.Message)
 	var connectbus = make(chan xmpp.Connect)
 	var disconnectbus = make(chan xmpp.Disconnect)
 
@@ -166,6 +181,7 @@ func main() {
 			&xmpp.DebugExtension{Log: l},
 			&xmpp.NormalMessageExtension{MessageBus: messagebus},
 			&xmpp.RosterExtension{Accounts: am},
+			&xmpp.PresenceExtension{PresenceBus: presencebus},
 		},
 		DisconnectBus: disconnectbus,
 		Domain:        "example.com",
@@ -187,6 +203,7 @@ func main() {
 	go am.routeRoutine(messagebus)
 	go am.connectRoutine(connectbus)
 	go am.disconnectRoutine(disconnectbus)
+	go am.presenceRoutine(presencebus)
 
 	// Handle each connection.
 	for {

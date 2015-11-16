@@ -54,3 +54,37 @@ func (e *RosterExtension) Process(message interface{}, from *Client) {
 		from.messages <- msg
 	}
 }
+
+// PresenceExtension handles ClientIQ presence requests and updates
+type PresenceExtension struct {
+	PresenceBus chan<- Message
+}
+
+// Process responds to Presence message from a client
+func (e *PresenceExtension) Process(message interface{}, from *Client) {
+	parsed, ok := message.(*ClientPresence)
+	if ok {
+		// this is how you reply to a message: from.messages <- message
+
+		// types:
+		// subscribe
+		// subscribed
+		// unsubscribed
+
+		// 1) check request and remove Resource
+
+		// 2) put request on the presence bus
+		// 3) put roster push on message bus
+		// or
+		// auto reply with 'subscribed' if invite in other direction
+
+		// compose the presence message (from) put on a channel that
+		// the server will then push to the message chan for all other clients
+		// difficult to - alert the 'to' field of the message
+
+		// if i receive a presense message from the client, put it on the presence
+		// bus for broadcasting to subscribers/peers
+		// server should alter message
+		e.PresenceBus <- Message{To: parsed.To, Data: message}
+	}
+}
