@@ -161,7 +161,6 @@ func main() {
 	xmppServer := &xmpp.Server{
 		Log:        l,
 		Accounts:   am,
-		MessageBus: messagebus,
 		ConnectBus: connectbus,
 		Extensions: []xmpp.Extension{
 			&xmpp.DebugExtension{Log: l},

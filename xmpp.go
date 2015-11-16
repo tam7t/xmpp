@@ -61,9 +61,6 @@ type Server struct {
 	// notify server that the client has disconnected
 	DisconnectBus chan<- Disconnect
 
-	// How the client sends messages to other clients
-	MessageBus chan<- Message
-
 	// Injectable logging interface
 	Log Logging
 }
