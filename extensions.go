@@ -1,6 +1,6 @@
 package xmpp
 
-import "fmt"
+import "encoding/xml"
 
 // Extension interface for processing normal messages
 type Extension interface {
@@ -14,7 +14,8 @@ type DebugExtension struct {
 
 // Process a message (write to debug logger)
 func (e *DebugExtension) Process(message interface{}, from *Client) {
-	e.Log.Debug(fmt.Sprintf("Processing message: %s", message))
+	data, _ := xml.Marshal(message)
+	e.Log.Debug("Processing message: " + string(data))
 }
 
 // NormalMessageExtension handles client messages
