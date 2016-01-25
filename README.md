@@ -1,5 +1,7 @@
 # Golang XMPP Server Library
 
+[![Join the chat at https://gitter.im/tam7t/xmpp](https://badges.gitter.im/tam7t/xmpp.svg)](https://gitter.im/tam7t/xmpp?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+
 ## Overview
 This is a fork of [github.com/agl/xmpp](https://github.com/agl/xmpp) modified
 for use by an XMPP server.
