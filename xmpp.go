@@ -89,7 +89,7 @@ func (s *Server) TCPAnswer(conn net.Conn) {
 
 	s.Log.Info(fmt.Sprintf("Accepting TCP connection from: %s", conn.RemoteAddr()))
 
-	state := NewTLSStateMachine()
+	state := NewTLSStateMachine(s.SkipTLS)
 	client := &Client{messages: make(chan interface{})}
 	defer close(client.messages)
 
